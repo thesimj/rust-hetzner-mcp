@@ -25,8 +25,6 @@ mod test_support;
 /// MCP server wrapping an [`HcloudClient`].
 #[derive(Clone)]
 pub struct HcloudServer {
-    // Read by the seam tool impls (M3a/M3b); the allow goes away at merge.
-    #[allow(dead_code)]
     pub(crate) client: HcloudClient,
     pub(crate) tool_router: ToolRouter<Self>,
 }
@@ -79,6 +77,16 @@ pub fn map_api_err(e: anyhow::Error) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])
 }
 
+/// Turn an upstream call into the tool's result: success passes through
+/// `ok_json`; failure becomes an `isError` `CallToolResult` (`map_api_err`),
+/// never a protocol-level error, so the model sees it and can recover.
+pub(crate) fn respond(result: anyhow::Result<Value>) -> Result<CallToolResult, ErrorData> {
+    match result {
+        Ok(value) => ok_json(value),
+        Err(e) => Ok(map_api_err(e)),
+    }
+}
+
 /// Start the stdio MCP server and run until the client disconnects.
 pub async fn run() -> anyhow::Result<()> {
     let client = HcloudClient::from_env()?;
@@ -112,6 +120,13 @@ mod tests {
             test_support::tool_result_json(&res),
             serde_json::json!({"servers": []})
         );
+    }
+
+    /// `+` on ToolRouter silently overwrites on name collision; pin the count.
+    #[test]
+    fn the_combined_router_registers_all_23_tools() {
+        let server = test_support::server_for("http://127.0.0.1:9".to_string());
+        assert_eq!(server.tool_router.list_all().len(), 23);
     }
 
     #[test]

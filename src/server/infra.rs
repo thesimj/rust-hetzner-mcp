@@ -12,9 +12,8 @@ use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
 
-use super::{HcloudServer, map_api_err, ok_json};
+use super::{HcloudServer, respond};
 
 /// Numeric ID of the resource to fetch.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -68,15 +67,6 @@ fn label_page_query(args: &LabelPageArgs) -> Vec<(&'static str, String)> {
     q
 }
 
-/// Render an upstream call as a tool result: success passes the envelope
-/// through, failure becomes an isError result (never a protocol error).
-fn render(result: anyhow::Result<Value>) -> Result<CallToolResult, ErrorData> {
-    match result {
-        Ok(v) => ok_json(v),
-        Err(e) => Ok(map_api_err(e)),
-    }
-}
-
 #[tool_router(router = infra_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
@@ -93,7 +83,7 @@ impl HcloudServer {
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = page_query(args.page, args.per_page);
-        render(self.client.get("/locations", &query).await)
+        respond(self.client.get("/locations", &query).await)
     }
 
     #[tool(
@@ -109,7 +99,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        render(
+        respond(
             self.client
                 .get(&format!("/locations/{}", args.id), &[])
                 .await,
@@ -130,7 +120,7 @@ impl HcloudServer {
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = page_query(args.page, args.per_page);
-        render(self.client.get("/datacenters", &query).await)
+        respond(self.client.get("/datacenters", &query).await)
     }
 
     #[tool(
@@ -146,7 +136,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        render(
+        respond(
             self.client
                 .get(&format!("/datacenters/{}", args.id), &[])
                 .await,
@@ -167,7 +157,7 @@ impl HcloudServer {
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = label_page_query(&args);
-        render(self.client.get("/volumes", &query).await)
+        respond(self.client.get("/volumes", &query).await)
     }
 
     #[tool(
@@ -183,7 +173,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        render(self.client.get(&format!("/volumes/{}", args.id), &[]).await)
+        respond(self.client.get(&format!("/volumes/{}", args.id), &[]).await)
     }
 
     #[tool(
@@ -200,7 +190,7 @@ impl HcloudServer {
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = label_page_query(&args);
-        render(self.client.get("/networks", &query).await)
+        respond(self.client.get("/networks", &query).await)
     }
 
     #[tool(
@@ -216,7 +206,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        render(
+        respond(
             self.client
                 .get(&format!("/networks/{}", args.id), &[])
                 .await,
@@ -237,7 +227,7 @@ impl HcloudServer {
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = label_page_query(&args);
-        render(self.client.get("/firewalls", &query).await)
+        respond(self.client.get("/firewalls", &query).await)
     }
 
     #[tool(
@@ -253,7 +243,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        render(
+        respond(
             self.client
                 .get(&format!("/firewalls/{}", args.id), &[])
                 .await,

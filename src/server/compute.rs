@@ -15,9 +15,8 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::{HcloudServer, map_api_err, ok_json};
+use super::{HcloudServer, respond};
 
 const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
 
@@ -128,16 +127,6 @@ fn pagination_query(page: Option<u32>, per_page: Option<u32>) -> Vec<(&'static s
         query.push(("per_page", per_page.to_string()));
     }
     query
-}
-
-/// Turn the client's `Result` into the tool's `Result`: success passes
-/// through `ok_json`; failure becomes an `isError` `CallToolResult` (per
-/// `map_api_err`) instead of a protocol-level error, so the model sees it.
-fn respond(result: anyhow::Result<Value>) -> Result<CallToolResult, ErrorData> {
-    match result {
-        Ok(value) => ok_json(value),
-        Err(e) => Ok(map_api_err(e)),
-    }
 }
 
 #[tool_router(router = compute_router, vis = "pub(crate)")]
