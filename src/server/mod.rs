@@ -87,6 +87,35 @@ pub(crate) fn respond(result: anyhow::Result<Value>) -> Result<CallToolResult, E
     }
 }
 
+/// Standard `page`/`per_page` query pair, omitting unset values.
+pub(crate) fn pagination_query(
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Vec<(&'static str, String)> {
+    let mut query = Vec::new();
+    if let Some(page) = page {
+        query.push(("page", page.to_string()));
+    }
+    if let Some(per_page) = per_page {
+        query.push(("per_page", per_page.to_string()));
+    }
+    query
+}
+
+/// Push an optional string query param, skipping `None` AND empty strings -
+/// Hetzner rejects empty values (e.g. `?label_selector=`) with 400.
+pub(crate) fn push_param(
+    query: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    value: Option<String>,
+) {
+    if let Some(v) = value
+        && !v.is_empty()
+    {
+        query.push((key, v));
+    }
+}
+
 /// Start the stdio MCP server and run until the client disconnects.
 pub async fn run() -> anyhow::Result<()> {
     let client = HcloudClient::from_env()?;
@@ -127,6 +156,15 @@ mod tests {
     fn the_combined_router_registers_all_23_tools() {
         let server = test_support::server_for("http://127.0.0.1:9".to_string());
         assert_eq!(server.tool_router.list_all().len(), 23);
+    }
+
+    #[test]
+    fn push_param_skips_none_and_empty_values() {
+        let mut q = pagination_query(Some(2), None);
+        push_param(&mut q, "label_selector", Some(String::new()));
+        push_param(&mut q, "name", None);
+        push_param(&mut q, "status", Some("running".into()));
+        assert_eq!(q, vec![("page", "2".into()), ("status", "running".into())]);
     }
 
     #[test]

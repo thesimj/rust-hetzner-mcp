@@ -13,6 +13,9 @@ async fn requests_advertise_gzip() {
         .mount(&server)
         .await;
     let c = hetzner_mcp::hcloud::HcloudClient::new(server.uri(), "t");
-    let v = c.get("/probe", &[]).await.expect("gzip header missing -> mock 404 -> this fails");
+    let v = c
+        .get("/probe", &[])
+        .await
+        .expect("gzip header missing -> mock 404 -> this fails");
     assert_eq!(v["ok"], true);
 }

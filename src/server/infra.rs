@@ -13,7 +13,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, respond};
+use super::{HcloudServer, pagination_query, push_param, respond};
 
 /// Numeric ID of the resource to fetch.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -46,24 +46,9 @@ pub(crate) struct LabelPageArgs {
     pub per_page: Option<u32>,
 }
 
-fn page_query(page: Option<u32>, per_page: Option<u32>) -> Vec<(&'static str, String)> {
-    let mut q = Vec::new();
-    if let Some(p) = page {
-        q.push(("page", p.to_string()));
-    }
-    if let Some(p) = per_page {
-        q.push(("per_page", p.to_string()));
-    }
-    q
-}
-
-fn label_page_query(args: &LabelPageArgs) -> Vec<(&'static str, String)> {
-    let mut q = page_query(args.page, args.per_page);
-    if let Some(sel) = &args.label_selector
-        && !sel.is_empty()
-    {
-        q.push(("label_selector", sel.clone()));
-    }
+fn label_page_query(args: LabelPageArgs) -> Vec<(&'static str, String)> {
+    let mut q = pagination_query(args.page, args.per_page);
+    push_param(&mut q, "label_selector", args.label_selector);
     q
 }
 
@@ -82,7 +67,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = page_query(args.page, args.per_page);
+        let query = pagination_query(args.page, args.per_page);
         respond(self.client.get("/locations", &query).await)
     }
 
@@ -119,7 +104,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = page_query(args.page, args.per_page);
+        let query = pagination_query(args.page, args.per_page);
         respond(self.client.get("/datacenters", &query).await)
     }
 
@@ -156,7 +141,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = label_page_query(&args);
+        let query = label_page_query(args);
         respond(self.client.get("/volumes", &query).await)
     }
 
@@ -189,7 +174,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = label_page_query(&args);
+        let query = label_page_query(args);
         respond(self.client.get("/networks", &query).await)
     }
 
@@ -226,7 +211,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = label_page_query(&args);
+        let query = label_page_query(args);
         respond(self.client.get("/firewalls", &query).await)
     }
 

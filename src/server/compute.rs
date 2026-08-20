@@ -16,7 +16,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, respond};
+use super::{HcloudServer, pagination_query, push_param, respond};
 
 const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
 
@@ -117,18 +117,6 @@ pub struct CreateSshKeyArgs {
     pub labels: Option<BTreeMap<String, String>>,
 }
 
-/// `page`/`per_page` as query params, omitting unset ones.
-fn pagination_query(page: Option<u32>, per_page: Option<u32>) -> Vec<(&'static str, String)> {
-    let mut query = Vec::new();
-    if let Some(page) = page {
-        query.push(("page", page.to_string()));
-    }
-    if let Some(per_page) = per_page {
-        query.push(("per_page", per_page.to_string()));
-    }
-    query
-}
-
 #[tool_router(router = compute_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
@@ -140,17 +128,13 @@ impl HcloudServer {
         Parameters(args): Parameters<ListServersArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let mut query = pagination_query(args.page, args.per_page);
-        if let Some(name) = args.name {
-            query.push(("name", name));
-        }
-        if let Some(label_selector) = args.label_selector {
-            query.push(("label_selector", label_selector));
-        }
+        push_param(&mut query, "name", args.name);
+        push_param(&mut query, "label_selector", args.label_selector);
         for status in args.status.into_iter().flatten() {
-            query.push(("status", status));
+            push_param(&mut query, "status", Some(status));
         }
         for sort in args.sort.into_iter().flatten() {
-            query.push(("sort", sort));
+            push_param(&mut query, "sort", Some(sort));
         }
         respond(self.client.get("/servers", &query).await)
     }
@@ -243,9 +227,7 @@ impl HcloudServer {
         Parameters(args): Parameters<ListImagesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let mut query = pagination_query(args.page, args.per_page);
-        if let Some(r#type) = args.r#type {
-            query.push(("type", r#type));
-        }
+        push_param(&mut query, "type", args.r#type);
         respond(self.client.get("/images", &query).await)
     }
 

@@ -83,7 +83,7 @@ impl HcloudClient {
             .with_context(|| format!("reading the response body from {path} failed"))?;
         if !status.is_success() {
             let hint = retry_after
-                .map(|s| format!(" (retry after {s}s)"))
+                .map(|s| format!(" (Retry-After: {s})"))
                 .unwrap_or_default();
             bail!(
                 "Hetzner API {path} returned {status}: {}{hint}",
@@ -219,7 +219,7 @@ mod tests {
         let err = client.get("/servers", &[]).await.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("rate_limit_exceeded") && msg.contains("retry after 3600s"),
+            msg.contains("rate_limit_exceeded") && msg.contains("Retry-After: 3600"),
             "got: {msg}"
         );
     }

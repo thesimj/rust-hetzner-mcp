@@ -21,6 +21,9 @@ debug/
 # Waykeeper session state - never commit
 .waykeeper/
 
+# Browser-automation session junk
+.playwright-mcp/
+
 # OS cruft
 .DS_Store
 Thumbs.db
