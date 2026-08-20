@@ -368,7 +368,7 @@ impl HcloudServer {
 mod tests {
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::ErrorCode;
-    use wiremock::matchers::{body_json, method, path, query_param};
+    use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -391,6 +391,7 @@ mod tests {
             .and(query_param("status", "off"))
             .and(query_param("sort", "id:asc"))
             .and(query_param("sort", "name:desc"))
+            .and(query_param_is_missing("label_selector"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({"servers": [{"id": 1}]})),
@@ -402,7 +403,7 @@ mod tests {
         let res = server
             .list_servers(Parameters(ListServersArgs {
                 name: Some("web-1".into()),
-                label_selector: None,
+                label_selector: Some(String::new()),
                 status: Some(vec!["running".into(), "off".into()]),
                 sort: Some(vec!["id:asc".into(), "name:desc".into()]),
                 page: None,

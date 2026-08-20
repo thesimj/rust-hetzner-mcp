@@ -64,7 +64,7 @@ impl ServerHandler for HcloudServer {
 /// Serialize a tool's JSON payload into the MCP text content block.
 /// Compact on purpose: the consumer is a model, and pretty-printing nearly
 /// doubles the token cost of every payload.
-pub fn ok_json(value: Value) -> Result<CallToolResult, ErrorData> {
+pub(crate) fn ok_json(value: Value) -> Result<CallToolResult, ErrorData> {
     let json = serde_json::to_string(&value)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
@@ -73,7 +73,7 @@ pub fn ok_json(value: Value) -> Result<CallToolResult, ErrorData> {
 /// Map an upstream API failure into a tool-level error result (isError), so
 /// the model sees the message and can recover. Protocol errors stay reserved
 /// for dispatch failures.
-pub fn map_api_err(e: anyhow::Error) -> CallToolResult {
+pub(crate) fn map_api_err(e: anyhow::Error) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])
 }
 

@@ -108,6 +108,7 @@ impl HcloudClient {
 /// real API.
 fn endpoint(env_value: Option<String>) -> String {
     env_value
+        .map(|v| v.trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| BASE_URL.to_string())
 }
