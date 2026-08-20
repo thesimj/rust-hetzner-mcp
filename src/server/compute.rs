@@ -1,5 +1,12 @@
 //! Compute tools: servers, images, server_types, ssh_keys. Implemented in
-//! milestone M3a (brief B3).
+//! milestone M3a (brief B3), fixed per review in B10.
+//!
+//! `IdArgs` and `PageArgs` are shared across several tools instead of a
+//! bespoke struct per tool - the id/pagination shape, docs, and validation
+//! are identical, and a per-tool struct would only rename the field's doc
+//! comment. This is a deliberate schema tradeoff (a slightly more generic
+//! per-field description), not an oversight; a new id- or pagination-only
+//! tool added here does not need its own struct.
 
 use std::collections::BTreeMap;
 
@@ -7,7 +14,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{HcloudServer, map_api_err, ok_json};
@@ -17,7 +24,8 @@ const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
 /// Numeric ID of a single resource, shared by the get/delete-by-id tools.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct IdArgs {
-    /// Numeric ID of the resource.
+    /// Numeric ID of the resource, as returned in the `id` field by this
+    /// tool's corresponding list_* tool (e.g. list_servers for get_server).
     pub id: u64,
 }
 
@@ -25,8 +33,10 @@ pub struct IdArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PageArgs {
     /// Page number, 1-based.
+    #[schemars(range(min = 1))]
     pub page: Option<u32>,
     /// Results per page (default 25, max 50).
+    #[schemars(range(min = 1, max = 50))]
     pub per_page: Option<u32>,
 }
 
@@ -41,12 +51,14 @@ pub struct ListServersArgs {
     /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
     pub sort: Option<Vec<String>>,
     /// Page number, 1-based.
+    #[schemars(range(min = 1))]
     pub page: Option<u32>,
     /// Results per page (default 25, max 50).
+    #[schemars(range(min = 1, max = 50))]
     pub per_page: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CreateServerArgs {
     /// Name for the new server.
     pub name: String,
@@ -55,16 +67,22 @@ pub struct CreateServerArgs {
     /// Image name or ID to boot from.
     pub image: String,
     /// Location name to create the server in.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     /// Datacenter name to create the server in.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub datacenter: Option<String>,
     /// SSH key names or IDs to install on the server.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_keys: Option<Vec<String>>,
     /// Cloud-init user data.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_data: Option<String>,
     /// Labels to attach to the server.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
     /// Whether to start the server right after creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_after_create: Option<bool>,
 }
 
@@ -82,18 +100,21 @@ pub struct ListImagesArgs {
     #[serde(rename = "type")]
     pub r#type: Option<String>,
     /// Page number, 1-based.
+    #[schemars(range(min = 1))]
     pub page: Option<u32>,
     /// Results per page (default 25, max 50).
+    #[schemars(range(min = 1, max = 50))]
     pub per_page: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CreateSshKeyArgs {
     /// Name for the new SSH key.
     pub name: String,
     /// Public key material (OpenSSH format).
     pub public_key: String,
     /// Labels to attach to the SSH key.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
 }
 
@@ -107,6 +128,16 @@ fn pagination_query(page: Option<u32>, per_page: Option<u32>) -> Vec<(&'static s
         query.push(("per_page", per_page.to_string()));
     }
     query
+}
+
+/// Turn the client's `Result` into the tool's `Result`: success passes
+/// through `ok_json`; failure becomes an `isError` `CallToolResult` (per
+/// `map_api_err`) instead of a protocol-level error, so the model sees it.
+fn respond(result: anyhow::Result<Value>) -> Result<CallToolResult, ErrorData> {
+    match result {
+        Ok(value) => ok_json(value),
+        Err(e) => Ok(map_api_err(e)),
+    }
 }
 
 #[tool_router(router = compute_router, vis = "pub(crate)")]
@@ -132,12 +163,7 @@ impl HcloudServer {
         for sort in args.sort.into_iter().flatten() {
             query.push(("sort", sort));
         }
-        let value = self
-            .client
-            .get("/servers", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get("/servers", &query).await)
     }
 
     #[tool(
@@ -148,12 +174,7 @@ impl HcloudServer {
         &self,
         Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = self
-            .client
-            .get(&format!("/servers/{id}"), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get(&format!("/servers/{id}"), &[]).await)
     }
 
     #[tool(
@@ -162,6 +183,7 @@ impl HcloudServer {
         annotations(
             title = "Create server",
             read_only_hint = false,
+            destructive_hint = false,
             open_world_hint = true
         )
     )]
@@ -169,40 +191,8 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateServerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut body = serde_json::Map::new();
-        body.insert("name".to_string(), Value::String(args.name));
-        body.insert("server_type".to_string(), Value::String(args.server_type));
-        body.insert("image".to_string(), Value::String(args.image));
-        if let Some(location) = args.location {
-            body.insert("location".to_string(), Value::String(location));
-        }
-        if let Some(datacenter) = args.datacenter {
-            body.insert("datacenter".to_string(), Value::String(datacenter));
-        }
-        if let Some(ssh_keys) = args.ssh_keys {
-            body.insert("ssh_keys".to_string(), Value::from(ssh_keys));
-        }
-        if let Some(user_data) = args.user_data {
-            body.insert("user_data".to_string(), Value::String(user_data));
-        }
-        if let Some(labels) = args.labels {
-            body.insert(
-                "labels".to_string(),
-                serde_json::to_value(labels).expect("BTreeMap<String,String> always serializes"),
-            );
-        }
-        if let Some(start_after_create) = args.start_after_create {
-            body.insert(
-                "start_after_create".to_string(),
-                Value::Bool(start_after_create),
-            );
-        }
-        let value = self
-            .client
-            .post("/servers", Value::Object(body))
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        let body = serde_json::to_value(&args).expect("CreateServerArgs always serializes");
+        respond(self.client.post("/servers", body).await)
     }
 
     #[tool(
@@ -218,17 +208,12 @@ impl HcloudServer {
         &self,
         Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = self
-            .client
-            .delete(&format!("/servers/{id}"))
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.delete(&format!("/servers/{id}")).await)
     }
 
     #[tool(
         description = "Run a power action (poweron, poweroff, reboot, shutdown) on a server. \
-        poweroff and shutdown stop workloads running on the server.",
+        poweroff, reboot, and shutdown all interrupt workloads running on the server.",
         annotations(
             title = "Power server",
             read_only_hint = false,
@@ -250,15 +235,14 @@ impl HcloudServer {
                 None,
             ));
         }
-        let value = self
-            .client
-            .post(
-                &format!("/servers/{}/actions/{}", args.id, args.action),
-                serde_json::json!({}),
-            )
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(
+            self.client
+                .post(
+                    &format!("/servers/{}/actions/{}", args.id, args.action),
+                    serde_json::json!({}),
+                )
+                .await,
+        )
     }
 
     #[tool(
@@ -273,12 +257,7 @@ impl HcloudServer {
         if let Some(r#type) = args.r#type {
             query.push(("type", r#type));
         }
-        let value = self
-            .client
-            .get("/images", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get("/images", &query).await)
     }
 
     #[tool(
@@ -289,12 +268,7 @@ impl HcloudServer {
         &self,
         Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = self
-            .client
-            .get(&format!("/images/{id}"), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get(&format!("/images/{id}"), &[]).await)
     }
 
     #[tool(
@@ -310,12 +284,7 @@ impl HcloudServer {
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = pagination_query(args.page, args.per_page);
-        let value = self
-            .client
-            .get("/server_types", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get("/server_types", &query).await)
     }
 
     #[tool(
@@ -330,12 +299,7 @@ impl HcloudServer {
         &self,
         Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = self
-            .client
-            .get(&format!("/server_types/{id}"), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get(&format!("/server_types/{id}"), &[]).await)
     }
 
     #[tool(
@@ -347,12 +311,7 @@ impl HcloudServer {
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = pagination_query(args.page, args.per_page);
-        let value = self
-            .client
-            .get("/ssh_keys", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get("/ssh_keys", &query).await)
     }
 
     #[tool(
@@ -363,12 +322,7 @@ impl HcloudServer {
         &self,
         Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = self
-            .client
-            .get(&format!("/ssh_keys/{id}"), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.get(&format!("/ssh_keys/{id}"), &[]).await)
     }
 
     #[tool(
@@ -376,6 +330,7 @@ impl HcloudServer {
         annotations(
             title = "Create SSH key",
             read_only_hint = false,
+            destructive_hint = false,
             open_world_hint = true
         )
     )]
@@ -383,21 +338,8 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateSshKeyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut body = serde_json::Map::new();
-        body.insert("name".to_string(), Value::String(args.name));
-        body.insert("public_key".to_string(), Value::String(args.public_key));
-        if let Some(labels) = args.labels {
-            body.insert(
-                "labels".to_string(),
-                serde_json::to_value(labels).expect("BTreeMap<String,String> always serializes"),
-            );
-        }
-        let value = self
-            .client
-            .post("/ssh_keys", Value::Object(body))
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        let body = serde_json::to_value(&args).expect("CreateSshKeyArgs always serializes");
+        respond(self.client.post("/ssh_keys", body).await)
     }
 
     #[tool(
@@ -413,23 +355,26 @@ impl HcloudServer {
         &self,
         Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = self
-            .client
-            .delete(&format!("/ssh_keys/{id}"))
-            .await
-            .map_err(map_api_err)?;
-        ok_json(value)
+        respond(self.client.delete(&format!("/ssh_keys/{id}")).await)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use rmcp::handler::server::wrapper::Parameters;
-    use wiremock::matchers::{body_partial_json, method, path, query_param};
+    use rmcp::model::ErrorCode;
+    use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::server::test_support::{server_for, tool_result_json};
+
+    /// Extract the plain text of an `isError` tool result (not JSON, so
+    /// `tool_result_json` doesn't apply).
+    fn error_text(res: &CallToolResult) -> String {
+        let v = serde_json::to_value(res).unwrap();
+        v["content"][0]["text"].as_str().unwrap().to_string()
+    }
 
     #[tokio::test]
     async fn list_servers_passes_filters_as_repeated_query_params() {
@@ -438,6 +383,9 @@ mod tests {
             .and(path("/servers"))
             .and(query_param("name", "web-1"))
             .and(query_param("status", "running"))
+            .and(query_param("status", "off"))
+            .and(query_param("sort", "id:asc"))
+            .and(query_param("sort", "name:desc"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({"servers": [{"id": 1}]})),
@@ -450,8 +398,8 @@ mod tests {
             .list_servers(Parameters(ListServersArgs {
                 name: Some("web-1".into()),
                 label_selector: None,
-                status: Some(vec!["running".into()]),
-                sort: None,
+                status: Some(vec!["running".into(), "off".into()]),
+                sort: Some(vec!["id:asc".into(), "name:desc".into()]),
                 page: None,
                 per_page: None,
             }))
@@ -464,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_servers_maps_upstream_errors() {
+    async fn list_servers_maps_upstream_errors_to_an_error_result() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/servers"))
@@ -473,7 +421,7 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        let err = server
+        let res = server
             .list_servers(Parameters(ListServersArgs {
                 name: None,
                 label_selector: None,
@@ -483,8 +431,10 @@ mod tests {
                 per_page: None,
             }))
             .await
-            .unwrap_err();
-        assert!(err.message.contains("500"), "got: {}", err.message);
+            .unwrap();
+        assert_eq!(res.is_error, Some(true));
+        let text = error_text(&res);
+        assert!(text.contains("500"), "got: {text}");
     }
 
     #[tokio::test]
@@ -510,11 +460,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_server_omits_unset_optional_fields() {
+    async fn create_server_sends_exactly_the_required_fields_when_optionals_are_unset() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/servers"))
-            .and(body_partial_json(serde_json::json!({
+            .and(body_json(serde_json::json!({
                 "name": "web-1",
                 "server_type": "cx22",
                 "image": "ubuntu-24.04"
@@ -549,9 +499,14 @@ mod tests {
     #[tokio::test]
     async fn create_server_forwards_optional_fields() {
         let mock = MockServer::start().await;
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
         Mock::given(method("POST"))
             .and(path("/servers"))
-            .and(body_partial_json(serde_json::json!({
+            .and(body_json(serde_json::json!({
+                "name": "web-2",
+                "server_type": "cx22",
+                "image": "ubuntu-24.04",
                 "location": "fsn1",
                 "ssh_keys": ["my-key"],
                 "labels": {"env": "prod"},
@@ -564,8 +519,6 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        let mut labels = BTreeMap::new();
-        labels.insert("env".to_string(), "prod".to_string());
         server
             .create_server(Parameters(CreateServerArgs {
                 name: "web-2".into(),
@@ -622,7 +575,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn power_server_rejects_unknown_actions() {
+    async fn power_server_rejects_unknown_actions_with_invalid_params() {
+        // No mock is mounted, and the base URL has nothing listening on it,
+        // so a transport-error message would *also* contain "nuke" (it's in
+        // the attempted URL) - assert the error kind, not message content.
         let server = server_for("http://127.0.0.1:9".to_string());
         let err = server
             .power_server(Parameters(PowerServerArgs {
@@ -631,7 +587,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert!(err.message.contains("nuke"), "got: {}", err.message);
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -761,7 +717,7 @@ mod tests {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/ssh_keys"))
-            .and(body_partial_json(serde_json::json!({
+            .and(body_json(serde_json::json!({
                 "name": "laptop",
                 "public_key": "ssh-ed25519 AAAA..."
             })))
