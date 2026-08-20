@@ -1,0 +1,10 @@
+[     890ms] [INFO] loadDocument: 329 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[     898ms] [INFO] deepClone: 7 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[     906ms] [INFO] initialize: 9 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[     911ms] [INFO] upgrade: 4 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[     960ms] [INFO] bundle: 44 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[    1051ms] [INFO] coerceValue: 91 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[    1074ms] [INFO] mergeObjects: 23 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[    1339ms] [INFO] addDocument: 449 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[    1371ms] [INFO] dereference: 13 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:0
+[    1388ms] [LOG] workspace: 15 ms @ https://docs.hetzner.cloud/_next/static/chunks/381.063b08c98b8d963e.js:120
