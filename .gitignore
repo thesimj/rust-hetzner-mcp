@@ -18,6 +18,9 @@ debug/
 .env
 .env.*
 
+# Waykeeper session state - never commit
+.waykeeper/
+
 # OS cruft
 .DS_Store
 Thumbs.db
