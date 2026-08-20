@@ -1,9 +1,558 @@
 //! Infra tools: locations, datacenters, volumes, networks, firewalls.
-//! Implemented in milestone M3b (brief B4); this skeleton freezes the router name.
+//! Implemented in milestone M3b (brief B4).
+//!
+//! Args structs are shared across tools with the same shape (`IdArgs` for
+//! every get_*, `PageArgs`/`LabelPageArgs` for list_*) rather than one struct
+//! per tool - rmcp strips struct-level doc comments from the schema it sends
+//! the client, so only field docs are wire-visible and the sharing costs
+//! nothing there.
 
-use rmcp::tool_router;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolResult;
+use rmcp::{ErrorData, tool, tool_router};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::Value;
 
-use super::HcloudServer;
+use super::{HcloudServer, map_api_err, ok_json};
+
+/// Numeric ID of the resource to fetch.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct IdArgs {
+    /// Numeric ID of the resource, from the matching list_* tool's response.
+    pub id: u64,
+}
+
+/// Pagination shared by list tools with no label filter.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct PageArgs {
+    /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
+
+/// Pagination plus label filter shared by list tools that support it.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct LabelPageArgs {
+    /// Label selector to filter results, e.g. "env=prod".
+    pub label_selector: Option<String>,
+    /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
+
+fn page_query(page: Option<u32>, per_page: Option<u32>) -> Vec<(&'static str, String)> {
+    let mut q = Vec::new();
+    if let Some(p) = page {
+        q.push(("page", p.to_string()));
+    }
+    if let Some(p) = per_page {
+        q.push(("per_page", p.to_string()));
+    }
+    q
+}
+
+fn label_page_query(args: &LabelPageArgs) -> Vec<(&'static str, String)> {
+    let mut q = page_query(args.page, args.per_page);
+    if let Some(sel) = &args.label_selector
+        && !sel.is_empty()
+    {
+        q.push(("label_selector", sel.clone()));
+    }
+    q
+}
+
+/// Render an upstream call as a tool result: success passes the envelope
+/// through, failure becomes an isError result (never a protocol error).
+fn render(result: anyhow::Result<Value>) -> Result<CallToolResult, ErrorData> {
+    match result {
+        Ok(v) => ok_json(v),
+        Err(e) => Ok(map_api_err(e)),
+    }
+}
 
 #[tool_router(router = infra_router, vis = "pub(crate)")]
-impl HcloudServer {}
+impl HcloudServer {
+    #[tool(
+        description = "List locations Hetzner Cloud resources can run in.",
+        annotations(
+            title = "List locations",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn list_locations(
+        &self,
+        Parameters(args): Parameters<PageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let query = page_query(args.page, args.per_page);
+        render(self.client.get("/locations", &query).await)
+    }
+
+    #[tool(
+        description = "Get a single location by ID.",
+        annotations(
+            title = "Get location",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn get_location(
+        &self,
+        Parameters(args): Parameters<IdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        render(
+            self.client
+                .get(&format!("/locations/{}", args.id), &[])
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "List datacenters Hetzner Cloud resources can run in.",
+        annotations(
+            title = "List datacenters",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn list_datacenters(
+        &self,
+        Parameters(args): Parameters<PageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let query = page_query(args.page, args.per_page);
+        render(self.client.get("/datacenters", &query).await)
+    }
+
+    #[tool(
+        description = "Get a single datacenter by ID.",
+        annotations(
+            title = "Get datacenter",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn get_datacenter(
+        &self,
+        Parameters(args): Parameters<IdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        render(
+            self.client
+                .get(&format!("/datacenters/{}", args.id), &[])
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "List block storage volumes.",
+        annotations(
+            title = "List volumes",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn list_volumes(
+        &self,
+        Parameters(args): Parameters<LabelPageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let query = label_page_query(&args);
+        render(self.client.get("/volumes", &query).await)
+    }
+
+    #[tool(
+        description = "Get a single volume by ID.",
+        annotations(
+            title = "Get volume",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn get_volume(
+        &self,
+        Parameters(args): Parameters<IdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        render(self.client.get(&format!("/volumes/{}", args.id), &[]).await)
+    }
+
+    #[tool(
+        description = "List private networks.",
+        annotations(
+            title = "List networks",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn list_networks(
+        &self,
+        Parameters(args): Parameters<LabelPageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let query = label_page_query(&args);
+        render(self.client.get("/networks", &query).await)
+    }
+
+    #[tool(
+        description = "Get a single network by ID.",
+        annotations(
+            title = "Get network",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn get_network(
+        &self,
+        Parameters(args): Parameters<IdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        render(
+            self.client
+                .get(&format!("/networks/{}", args.id), &[])
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "List firewalls.",
+        annotations(
+            title = "List firewalls",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn list_firewalls(
+        &self,
+        Parameters(args): Parameters<LabelPageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let query = label_page_query(&args);
+        render(self.client.get("/firewalls", &query).await)
+    }
+
+    #[tool(
+        description = "Get a single firewall by ID.",
+        annotations(
+            title = "Get firewall",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn get_firewall(
+        &self,
+        Parameters(args): Parameters<IdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        render(
+            self.client
+                .get(&format!("/firewalls/{}", args.id), &[])
+                .await,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rmcp::handler::server::wrapper::Parameters;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::super::test_support::{server_for, tool_result_json};
+    use super::{IdArgs, LabelPageArgs, PageArgs};
+
+    /// Every list_* tool forwards page/per_page (and label_selector, where the
+    /// tool takes one) verbatim, and passes the response envelope through.
+    #[tokio::test]
+    async fn list_tools_forward_pagination_and_label_and_return_the_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/locations"))
+            .and(query_param("page", "1"))
+            .and(query_param("per_page", "25"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "locations": [{"id": 1}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/datacenters"))
+            .and(query_param("page", "2"))
+            .and(query_param("per_page", "30"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "datacenters": [{"id": 2}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/volumes"))
+            .and(query_param("label_selector", "env=prod"))
+            .and(query_param("page", "3"))
+            .and(query_param("per_page", "10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "volumes": [{"id": 3}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/networks"))
+            .and(query_param("label_selector", "team=x"))
+            .and(query_param("page", "4"))
+            .and(query_param("per_page", "15"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "networks": [{"id": 4}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/firewalls"))
+            .and(query_param("label_selector", "app=y"))
+            .and(query_param("page", "5"))
+            .and(query_param("per_page", "20"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "firewalls": [{"id": 5}]
+            })))
+            .mount(&server)
+            .await;
+
+        let hcloud = server_for(server.uri());
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_locations(Parameters(PageArgs {
+                        page: Some(1),
+                        per_page: Some(25)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"locations": [{"id": 1}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_datacenters(Parameters(PageArgs {
+                        page: Some(2),
+                        per_page: Some(30)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"datacenters": [{"id": 2}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_volumes(Parameters(LabelPageArgs {
+                        label_selector: Some("env=prod".to_string()),
+                        page: Some(3),
+                        per_page: Some(10)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"volumes": [{"id": 3}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_networks(Parameters(LabelPageArgs {
+                        label_selector: Some("team=x".to_string()),
+                        page: Some(4),
+                        per_page: Some(15)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"networks": [{"id": 4}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_firewalls(Parameters(LabelPageArgs {
+                        label_selector: Some("app=y".to_string()),
+                        page: Some(5),
+                        per_page: Some(20)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"firewalls": [{"id": 5}]})
+        );
+    }
+
+    /// F1: an empty label_selector must be dropped, not sent as `?label_selector=`
+    /// (Hetzner 400s on that). The mock only matches a request with the param absent.
+    #[tokio::test]
+    async fn list_volumes_drops_an_empty_label_selector() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/volumes"))
+            .and(query_param_is_missing("label_selector"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"volumes": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let hcloud = server_for(server.uri());
+        let res = hcloud
+            .list_volumes(Parameters(LabelPageArgs {
+                label_selector: Some(String::new()),
+                page: None,
+                per_page: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"volumes": []}));
+    }
+
+    /// Every get_* tool builds `/{resource}/{id}` and passes the envelope through.
+    /// F2: also proves the id is actually interpolated, not hardcoded - a
+    /// request for an unmounted id must fail rather than silently succeed.
+    #[tokio::test]
+    async fn get_tools_hit_their_id_path_and_return_the_envelope() {
+        let server = MockServer::start().await;
+        for (route, envelope) in [
+            ("/locations/42", serde_json::json!({"location": {"id": 42}})),
+            (
+                "/datacenters/7",
+                serde_json::json!({"datacenter": {"id": 7}}),
+            ),
+            ("/volumes/3", serde_json::json!({"volume": {"id": 3}})),
+            ("/networks/5", serde_json::json!({"network": {"id": 5}})),
+            ("/firewalls/8", serde_json::json!({"firewall": {"id": 8}})),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&envelope))
+                .mount(&server)
+                .await;
+        }
+
+        let hcloud = server_for(server.uri());
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .get_location(Parameters(IdArgs { id: 42 }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"location": {"id": 42}})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .get_datacenter(Parameters(IdArgs { id: 7 }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"datacenter": {"id": 7}})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .get_volume(Parameters(IdArgs { id: 3 }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"volume": {"id": 3}})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .get_network(Parameters(IdArgs { id: 5 }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"network": {"id": 5}})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .get_firewall(Parameters(IdArgs { id: 8 }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"firewall": {"id": 8}})
+        );
+
+        let unmounted = hcloud
+            .get_network(Parameters(IdArgs { id: 999 }))
+            .await
+            .unwrap();
+        assert_eq!(
+            unmounted.is_error,
+            Some(true),
+            "an id with no mounted mock must not resolve to another tool's route"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_location_maps_upstream_errors_to_a_tool_error_result() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/locations/9"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": {"code": "not_found", "message": "location not found"}
+            })))
+            .mount(&server)
+            .await;
+
+        let hcloud = server_for(server.uri());
+        let res = hcloud
+            .get_location(Parameters(IdArgs { id: 9 }))
+            .await
+            .unwrap();
+        assert_eq!(res.is_error, Some(true));
+        let v = serde_json::to_value(&res).unwrap();
+        let text = v["content"][0]["text"].as_str().expect("text content");
+        assert!(text.contains("not_found"), "got: {text}");
+    }
+
+    #[test]
+    fn infra_router_registers_all_ten_tools_with_read_only_annotations() {
+        let router = super::HcloudServer::infra_router();
+        let names = [
+            "list_locations",
+            "get_location",
+            "list_datacenters",
+            "get_datacenter",
+            "list_volumes",
+            "get_volume",
+            "list_networks",
+            "get_network",
+            "list_firewalls",
+            "get_firewall",
+        ];
+        assert_eq!(router.list_all().len(), 10);
+        for name in names {
+            let tool = router
+                .get(name)
+                .unwrap_or_else(|| panic!("missing route: {name}"));
+            let annotations = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} has no annotations"));
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(true),
+                "{name} must be read_only_hint = true"
+            );
+            assert_eq!(
+                annotations.destructive_hint,
+                Some(false),
+                "{name} must be destructive_hint = false"
+            );
+        }
+    }
+}
