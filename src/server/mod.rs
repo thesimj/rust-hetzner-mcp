@@ -49,9 +49,10 @@ impl ServerHandler for HcloudServer {
                 get_server, list_images, list_server_types, list_locations, \
                 list_datacenters, list_volumes, list_networks, list_firewalls, \
                 list_ssh_keys and their get_* variants) are safe to call freely. \
-                create_server creates a billable resource; delete_server, \
-                power_server, and delete_ssh_key are destructive - confirm with \
-                the user before calling them.",
+                create_server creates a billable resource and create_ssh_key \
+                adds a persistent credential; delete_server, power_server, and \
+                delete_ssh_key are destructive - confirm with the user before \
+                calling any of these.",
             );
         // The objective pins the latest MCP revision; rmcp does not default to
         // it, so name it explicitly (pinned by a test below).
@@ -63,15 +64,19 @@ impl ServerHandler for HcloudServer {
 }
 
 /// Serialize a tool's JSON payload into the MCP text content block.
+/// Compact on purpose: the consumer is a model, and pretty-printing nearly
+/// doubles the token cost of every payload.
 pub fn ok_json(value: Value) -> Result<CallToolResult, ErrorData> {
-    let json = serde_json::to_string_pretty(&value)
+    let json = serde_json::to_string(&value)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
-/// Map an upstream API failure into an MCP internal error.
-pub fn map_api_err(e: anyhow::Error) -> ErrorData {
-    ErrorData::internal_error(format!("{e:#}"), None)
+/// Map an upstream API failure into a tool-level error result (isError), so
+/// the model sees the message and can recover. Protocol errors stay reserved
+/// for dispatch failures.
+pub fn map_api_err(e: anyhow::Error) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])
 }
 
 /// Start the stdio MCP server and run until the client disconnects.
@@ -110,8 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn map_api_err_carries_the_message() {
-        let e = map_api_err(anyhow::anyhow!("boom"));
-        assert!(e.message.contains("boom"), "got: {}", e.message);
+    fn map_api_err_returns_a_tool_error_result_with_the_message() {
+        let res = map_api_err(anyhow::anyhow!("boom"));
+        assert_eq!(res.is_error, Some(true));
+        let v = serde_json::to_value(&res).unwrap();
+        let text = v["content"][0]["text"].as_str().expect("text content");
+        assert!(text.contains("boom"), "got: {text}");
     }
 }
