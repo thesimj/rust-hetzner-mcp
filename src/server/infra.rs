@@ -1,38 +1,49 @@
 //! Infra tools: locations, datacenters, volumes, networks, firewalls.
 //! Implemented in milestone M3b (brief B4).
+//!
+//! Args structs are shared across tools with the same shape (`IdArgs` for
+//! every get_*, `PageArgs`/`LabelPageArgs` for list_*) rather than one struct
+//! per tool - rmcp strips struct-level doc comments from the schema it sends
+//! the client, so only field docs are wire-visible and the sharing costs
+//! nothing there.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::{HcloudServer, map_api_err, ok_json};
 
 /// Numeric ID of the resource to fetch.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct IdArgs {
-    /// Numeric ID of the resource.
+pub(crate) struct IdArgs {
+    /// Numeric ID of the resource, from the matching list_* tool's response.
     pub id: u64,
 }
 
 /// Pagination shared by list tools with no label filter.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PageArgs {
+pub(crate) struct PageArgs {
     /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
     pub page: Option<u32>,
     /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
     pub per_page: Option<u32>,
 }
 
 /// Pagination plus label filter shared by list tools that support it.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct LabelPageArgs {
+pub(crate) struct LabelPageArgs {
     /// Label selector to filter results, e.g. "env=prod".
     pub label_selector: Option<String>,
     /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
     pub page: Option<u32>,
     /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
     pub per_page: Option<u32>,
 }
 
@@ -49,10 +60,21 @@ fn page_query(page: Option<u32>, per_page: Option<u32>) -> Vec<(&'static str, St
 
 fn label_page_query(args: &LabelPageArgs) -> Vec<(&'static str, String)> {
     let mut q = page_query(args.page, args.per_page);
-    if let Some(sel) = &args.label_selector {
+    if let Some(sel) = &args.label_selector
+        && !sel.is_empty()
+    {
         q.push(("label_selector", sel.clone()));
     }
     q
+}
+
+/// Render an upstream call as a tool result: success passes the envelope
+/// through, failure becomes an isError result (never a protocol error).
+fn render(result: anyhow::Result<Value>) -> Result<CallToolResult, ErrorData> {
+    match result {
+        Ok(v) => ok_json(v),
+        Err(e) => Ok(map_api_err(e)),
+    }
 }
 
 #[tool_router(router = infra_router, vis = "pub(crate)")]
@@ -71,12 +93,7 @@ impl HcloudServer {
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = page_query(args.page, args.per_page);
-        let v = self
-            .client
-            .get("/locations", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(self.client.get("/locations", &query).await)
     }
 
     #[tool(
@@ -92,12 +109,11 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self
-            .client
-            .get(&format!("/locations/{}", args.id), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(
+            self.client
+                .get(&format!("/locations/{}", args.id), &[])
+                .await,
+        )
     }
 
     #[tool(
@@ -114,12 +130,7 @@ impl HcloudServer {
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = page_query(args.page, args.per_page);
-        let v = self
-            .client
-            .get("/datacenters", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(self.client.get("/datacenters", &query).await)
     }
 
     #[tool(
@@ -135,12 +146,11 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self
-            .client
-            .get(&format!("/datacenters/{}", args.id), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(
+            self.client
+                .get(&format!("/datacenters/{}", args.id), &[])
+                .await,
+        )
     }
 
     #[tool(
@@ -157,12 +167,7 @@ impl HcloudServer {
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = label_page_query(&args);
-        let v = self
-            .client
-            .get("/volumes", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(self.client.get("/volumes", &query).await)
     }
 
     #[tool(
@@ -178,12 +183,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self
-            .client
-            .get(&format!("/volumes/{}", args.id), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(self.client.get(&format!("/volumes/{}", args.id), &[]).await)
     }
 
     #[tool(
@@ -200,12 +200,7 @@ impl HcloudServer {
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = label_page_query(&args);
-        let v = self
-            .client
-            .get("/networks", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(self.client.get("/networks", &query).await)
     }
 
     #[tool(
@@ -221,12 +216,11 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self
-            .client
-            .get(&format!("/networks/{}", args.id), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(
+            self.client
+                .get(&format!("/networks/{}", args.id), &[])
+                .await,
+        )
     }
 
     #[tool(
@@ -243,12 +237,7 @@ impl HcloudServer {
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let query = label_page_query(&args);
-        let v = self
-            .client
-            .get("/firewalls", &query)
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(self.client.get("/firewalls", &query).await)
     }
 
     #[tool(
@@ -264,116 +253,151 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self
-            .client
-            .get(&format!("/firewalls/{}", args.id), &[])
-            .await
-            .map_err(map_api_err)?;
-        ok_json(v)
+        render(
+            self.client
+                .get(&format!("/firewalls/{}", args.id), &[])
+                .await,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use rmcp::handler::server::wrapper::Parameters;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::test_support::{server_for, tool_result_json};
     use super::{IdArgs, LabelPageArgs, PageArgs};
 
-    fn no_page() -> PageArgs {
-        PageArgs {
-            page: None,
-            per_page: None,
-        }
-    }
-
-    fn no_filter() -> LabelPageArgs {
-        LabelPageArgs {
-            label_selector: None,
-            page: None,
-            per_page: None,
-        }
-    }
-
-    /// Every plain list_* tool (no label filter) passes the envelope through untouched.
+    /// Every list_* tool forwards page/per_page (and label_selector, where the
+    /// tool takes one) verbatim, and passes the response envelope through.
     #[tokio::test]
-    async fn list_tools_without_a_filter_return_the_envelope() {
-        let server = MockServer::start().await;
-        for (segment, envelope) in [
-            ("locations", serde_json::json!({"locations": [{"id": 1}]})),
-            ("datacenters", serde_json::json!({"datacenters": []})),
-            ("networks", serde_json::json!({"networks": []})),
-            ("firewalls", serde_json::json!({"firewalls": []})),
-        ] {
-            Mock::given(method("GET"))
-                .and(path(format!("/{segment}")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(&envelope))
-                .mount(&server)
-                .await;
-        }
-
-        let hcloud = server_for(server.uri());
-        assert_eq!(
-            tool_result_json(&hcloud.list_locations(Parameters(no_page())).await.unwrap()),
-            serde_json::json!({"locations": [{"id": 1}]})
-        );
-        assert_eq!(
-            tool_result_json(
-                &hcloud
-                    .list_datacenters(Parameters(no_page()))
-                    .await
-                    .unwrap()
-            ),
-            serde_json::json!({"datacenters": []})
-        );
-        assert_eq!(
-            tool_result_json(&hcloud.list_networks(Parameters(no_filter())).await.unwrap()),
-            serde_json::json!({"networks": []})
-        );
-        assert_eq!(
-            tool_result_json(
-                &hcloud
-                    .list_firewalls(Parameters(no_filter()))
-                    .await
-                    .unwrap()
-            ),
-            serde_json::json!({"firewalls": []})
-        );
-    }
-
-    #[tokio::test]
-    async fn list_locations_forwards_pagination() {
+    async fn list_tools_forward_pagination_and_label_and_return_the_envelope() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/locations"))
+            .and(query_param("page", "1"))
+            .and(query_param("per_page", "25"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "locations": [{"id": 1}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/datacenters"))
             .and(query_param("page", "2"))
+            .and(query_param("per_page", "30"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "datacenters": [{"id": 2}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/volumes"))
+            .and(query_param("label_selector", "env=prod"))
+            .and(query_param("page", "3"))
             .and(query_param("per_page", "10"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "locations": []
+                "volumes": [{"id": 3}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/networks"))
+            .and(query_param("label_selector", "team=x"))
+            .and(query_param("page", "4"))
+            .and(query_param("per_page", "15"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "networks": [{"id": 4}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/firewalls"))
+            .and(query_param("label_selector", "app=y"))
+            .and(query_param("page", "5"))
+            .and(query_param("per_page", "20"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "firewalls": [{"id": 5}]
             })))
             .mount(&server)
             .await;
 
         let hcloud = server_for(server.uri());
-        let res = hcloud
-            .list_locations(Parameters(PageArgs {
-                page: Some(2),
-                per_page: Some(10),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"locations": []}));
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_locations(Parameters(PageArgs {
+                        page: Some(1),
+                        per_page: Some(25)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"locations": [{"id": 1}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_datacenters(Parameters(PageArgs {
+                        page: Some(2),
+                        per_page: Some(30)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"datacenters": [{"id": 2}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_volumes(Parameters(LabelPageArgs {
+                        label_selector: Some("env=prod".to_string()),
+                        page: Some(3),
+                        per_page: Some(10)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"volumes": [{"id": 3}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_networks(Parameters(LabelPageArgs {
+                        label_selector: Some("team=x".to_string()),
+                        page: Some(4),
+                        per_page: Some(15)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"networks": [{"id": 4}]})
+        );
+        assert_eq!(
+            tool_result_json(
+                &hcloud
+                    .list_firewalls(Parameters(LabelPageArgs {
+                        label_selector: Some("app=y".to_string()),
+                        page: Some(5),
+                        per_page: Some(20)
+                    }))
+                    .await
+                    .unwrap()
+            ),
+            serde_json::json!({"firewalls": [{"id": 5}]})
+        );
     }
 
+    /// F1: an empty label_selector must be dropped, not sent as `?label_selector=`
+    /// (Hetzner 400s on that). The mock only matches a request with the param absent.
     #[tokio::test]
-    async fn list_volumes_forwards_label_selector_and_pagination() {
+    async fn list_volumes_drops_an_empty_label_selector() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/volumes"))
-            .and(query_param("label_selector", "env=prod"))
-            .and(query_param("page", "1"))
+            .and(query_param_is_missing("label_selector"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"volumes": []})),
             )
@@ -383,8 +407,8 @@ mod tests {
         let hcloud = server_for(server.uri());
         let res = hcloud
             .list_volumes(Parameters(LabelPageArgs {
-                label_selector: Some("env=prod".to_string()),
-                page: Some(1),
+                label_selector: Some(String::new()),
+                page: None,
                 per_page: None,
             }))
             .await
@@ -393,6 +417,8 @@ mod tests {
     }
 
     /// Every get_* tool builds `/{resource}/{id}` and passes the envelope through.
+    /// F2: also proves the id is actually interpolated, not hardcoded - a
+    /// request for an unmounted id must fail rather than silently succeed.
     #[tokio::test]
     async fn get_tools_hit_their_id_path_and_return_the_envelope() {
         let server = MockServer::start().await;
@@ -459,10 +485,20 @@ mod tests {
             ),
             serde_json::json!({"firewall": {"id": 8}})
         );
+
+        let unmounted = hcloud
+            .get_network(Parameters(IdArgs { id: 999 }))
+            .await
+            .unwrap();
+        assert_eq!(
+            unmounted.is_error,
+            Some(true),
+            "an id with no mounted mock must not resolve to another tool's route"
+        );
     }
 
     #[tokio::test]
-    async fn get_location_maps_upstream_errors() {
+    async fn get_location_maps_upstream_errors_to_a_tool_error_result() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/locations/9"))
@@ -473,17 +509,20 @@ mod tests {
             .await;
 
         let hcloud = server_for(server.uri());
-        let err = hcloud
+        let res = hcloud
             .get_location(Parameters(IdArgs { id: 9 }))
             .await
-            .unwrap_err();
-        assert!(err.message.contains("not_found"), "got: {}", err.message);
+            .unwrap();
+        assert_eq!(res.is_error, Some(true));
+        let v = serde_json::to_value(&res).unwrap();
+        let text = v["content"][0]["text"].as_str().expect("text content");
+        assert!(text.contains("not_found"), "got: {text}");
     }
 
     #[test]
-    fn infra_router_registers_all_ten_tools() {
+    fn infra_router_registers_all_ten_tools_with_read_only_annotations() {
         let router = super::HcloudServer::infra_router();
-        for name in [
+        let names = [
             "list_locations",
             "get_location",
             "list_datacenters",
@@ -494,9 +533,26 @@ mod tests {
             "get_network",
             "list_firewalls",
             "get_firewall",
-        ] {
-            assert!(router.has_route(name), "missing route: {name}");
-        }
+        ];
         assert_eq!(router.list_all().len(), 10);
+        for name in names {
+            let tool = router
+                .get(name)
+                .unwrap_or_else(|| panic!("missing route: {name}"));
+            let annotations = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} has no annotations"));
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(true),
+                "{name} must be read_only_hint = true"
+            );
+            assert_eq!(
+                annotations.destructive_hint,
+                Some(false),
+                "{name} must be destructive_hint = false"
+            );
+        }
     }
 }
