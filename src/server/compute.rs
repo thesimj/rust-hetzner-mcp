@@ -121,7 +121,12 @@ pub struct CreateSshKeyArgs {
 impl HcloudServer {
     #[tool(
         description = "List servers, optionally filtered by name, label selector, or status.",
-        annotations(title = "List servers", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "List servers",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn list_servers(
         &self,
@@ -141,7 +146,12 @@ impl HcloudServer {
 
     #[tool(
         description = "Get a single server by ID.",
-        annotations(title = "Get server", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "Get server",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn get_server(
         &self,
@@ -164,7 +174,8 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateServerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args).expect("CreateServerArgs always serializes");
+        let body = serde_json::to_value(&args)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         respond(self.client.post("/servers", body).await)
     }
 
@@ -220,7 +231,12 @@ impl HcloudServer {
 
     #[tool(
         description = "List available images, optionally filtered by type.",
-        annotations(title = "List images", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "List images",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn list_images(
         &self,
@@ -233,7 +249,12 @@ impl HcloudServer {
 
     #[tool(
         description = "Get a single image by ID.",
-        annotations(title = "Get image", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "Get image",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn get_image(
         &self,
@@ -247,6 +268,7 @@ impl HcloudServer {
         annotations(
             title = "List server types",
             read_only_hint = true,
+            destructive_hint = false,
             open_world_hint = true
         )
     )]
@@ -263,6 +285,7 @@ impl HcloudServer {
         annotations(
             title = "Get server type",
             read_only_hint = true,
+            destructive_hint = false,
             open_world_hint = true
         )
     )]
@@ -275,7 +298,12 @@ impl HcloudServer {
 
     #[tool(
         description = "List SSH keys uploaded to the project.",
-        annotations(title = "List SSH keys", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "List SSH keys",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn list_ssh_keys(
         &self,
@@ -287,7 +315,12 @@ impl HcloudServer {
 
     #[tool(
         description = "Get a single SSH key by ID.",
-        annotations(title = "Get SSH key", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "Get SSH key",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn get_ssh_key(
         &self,
@@ -309,7 +342,8 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateSshKeyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args).expect("CreateSshKeyArgs always serializes");
+        let body = serde_json::to_value(&args)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         respond(self.client.post("/ssh_keys", body).await)
     }
 
@@ -490,7 +524,7 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .create_server(Parameters(CreateServerArgs {
                 name: "web-2".into(),
                 server_type: "cx22".into(),
@@ -504,6 +538,10 @@ mod tests {
             }))
             .await
             .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"server": {"id": 2}})
+        );
     }
 
     #[tokio::test]
@@ -518,10 +556,11 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .delete_server(Parameters(IdArgs { id: 7 }))
             .await
             .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
     }
 
     #[tokio::test]
@@ -536,13 +575,14 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .power_server(Parameters(PowerServerArgs {
                 id: 7,
                 action: "reboot".into(),
             }))
             .await
             .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
     }
 
     #[tokio::test]
@@ -597,10 +637,14 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .get_image(Parameters(IdArgs { id: 5 }))
             .await
             .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"image": {"id": 5}})
+        );
     }
 
     #[tokio::test]
@@ -617,13 +661,17 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .list_server_types(Parameters(PageArgs {
                 page: Some(2),
                 per_page: Some(10),
             }))
             .await
             .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"server_types": []})
+        );
     }
 
     #[tokio::test]
@@ -638,10 +686,14 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .get_server_type(Parameters(IdArgs { id: 3 }))
             .await
             .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"server_type": {"id": 3}})
+        );
     }
 
     #[tokio::test]
@@ -656,13 +708,14 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .list_ssh_keys(Parameters(PageArgs {
                 page: None,
                 per_page: None,
             }))
             .await
             .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"ssh_keys": []}));
     }
 
     #[tokio::test]
@@ -677,10 +730,14 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .get_ssh_key(Parameters(IdArgs { id: 9 }))
             .await
             .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"ssh_key": {"id": 9}})
+        );
     }
 
     #[tokio::test]
@@ -699,7 +756,7 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .create_ssh_key(Parameters(CreateSshKeyArgs {
                 name: "laptop".into(),
                 public_key: "ssh-ed25519 AAAA...".into(),
@@ -707,6 +764,10 @@ mod tests {
             }))
             .await
             .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"ssh_key": {"id": 10}})
+        );
     }
 
     #[tokio::test]
@@ -719,9 +780,52 @@ mod tests {
             .await;
 
         let server = server_for(mock.uri());
-        server
+        let res = server
             .delete_ssh_key(Parameters(IdArgs { id: 10 }))
             .await
             .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({}));
+    }
+
+    /// Mirrors infra's router annotation assertion: (read_only, destructive)
+    /// per tool, so flipping a hint on any of the 13 tools breaks the suite.
+    #[test]
+    fn compute_router_registers_all_13_tools_with_expected_annotations() {
+        let router = super::HcloudServer::compute_router();
+        let expected: [(&str, bool, bool); 13] = [
+            ("list_servers", true, false),
+            ("get_server", true, false),
+            ("create_server", false, false),
+            ("delete_server", false, true),
+            ("power_server", false, true),
+            ("list_images", true, false),
+            ("get_image", true, false),
+            ("list_server_types", true, false),
+            ("get_server_type", true, false),
+            ("list_ssh_keys", true, false),
+            ("get_ssh_key", true, false),
+            ("create_ssh_key", false, false),
+            ("delete_ssh_key", false, true),
+        ];
+        assert_eq!(router.list_all().len(), 13);
+        for (name, read_only, destructive) in expected {
+            let tool = router
+                .get(name)
+                .unwrap_or_else(|| panic!("missing route: {name}"));
+            let annotations = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} has no annotations"));
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(read_only),
+                "{name} must be read_only_hint = {read_only}"
+            );
+            assert_eq!(
+                annotations.destructive_hint,
+                Some(destructive),
+                "{name} must be destructive_hint = {destructive}"
+            );
+        }
     }
 }
