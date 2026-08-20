@@ -1,6 +1,6 @@
 # hetzner-mcp
 
-An MCP server for the Hetzner Cloud API: servers, images, SSH keys, locations, datacenters, volumes, networks, and firewalls, over stdio.
+An MCP server for the Hetzner Cloud API: servers, images, server types, SSH keys, locations, datacenters, volumes, networks, and firewalls, over stdio.
 
 ## Install
 
@@ -49,7 +49,7 @@ For any other MCP client, add it to your server config:
 23 tools total. Every `list_*`/`get_*` tool is read-only.
 
 **Servers**
-- `list_servers` - list servers, filterable by name, label selector, or status
+- `list_servers` - list servers, filterable by name, label selector, or status, with sort support
 - `get_server` - get a server by ID
 - `create_server` - create a server. **Billable.** Response includes `root_password` exactly once
 - `delete_server` - delete a server and all its data. **Destructive**

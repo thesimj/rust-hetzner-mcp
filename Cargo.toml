@@ -1,6 +1,7 @@
 [package]
 name = "hetzner-mcp"
 version = "0.1.0"
+authors = ["Nick Bubelich"]
 edition = "2024"
 # Floor set by rmcp 3.x and our use of let-chains.
 rust-version = "1.88"

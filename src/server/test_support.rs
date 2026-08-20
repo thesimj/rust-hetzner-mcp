@@ -8,7 +8,7 @@ use super::HcloudServer;
 
 /// Build a server whose client talks to the given mock Hetzner base URL.
 pub(crate) fn server_for(uri: String) -> HcloudServer {
-    HcloudServer::new(HcloudClient::new(uri, "test-token"))
+    HcloudServer::new(HcloudClient::new(uri, "test-token").expect("test client"))
 }
 
 /// Extract the JSON the tool wrote into its text content block.

@@ -12,7 +12,7 @@ async fn requests_advertise_gzip() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
         .mount(&server)
         .await;
-    let c = hetzner_mcp::hcloud::HcloudClient::new(server.uri(), "t");
+    let c = hetzner_mcp::hcloud::HcloudClient::new(server.uri(), "t").unwrap();
     let v = c
         .get("/probe", &[])
         .await

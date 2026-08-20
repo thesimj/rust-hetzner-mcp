@@ -25,24 +25,24 @@ impl HcloudClient {
     pub fn from_env() -> Result<Self> {
         let token = std::env::var("HCLOUD_TOKEN")
             .context("HCLOUD_TOKEN environment variable is required")?;
-        Ok(Self::new(
-            endpoint(std::env::var("HCLOUD_ENDPOINT").ok()),
-            token,
-        ))
+        Self::new(endpoint(std::env::var("HCLOUD_ENDPOINT").ok()), token)
     }
 
     /// Build a client against any base URL (tests point this at wiremock).
-    pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
+    /// Fails when the TLS backend cannot load a platform trust store.
+    pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(60))
             .build()
-            .expect("failed to build the HTTP client - is a platform TLS trust store available?");
-        Self {
+            .context(
+                "failed to build the HTTP client - is a platform TLS trust store available?",
+            )?;
+        Ok(Self {
             http,
             token: token.into(),
             base_url: base_url.into(),
-        }
+        })
     }
 
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
@@ -148,6 +148,10 @@ mod tests {
             endpoint(Some("http://127.0.0.1:1/v1".into())),
             "http://127.0.0.1:1/v1"
         );
+        assert_eq!(
+            endpoint(Some("http://127.0.0.1:1/v1/".into())),
+            "http://127.0.0.1:1/v1"
+        );
     }
 
     #[test]
@@ -191,7 +195,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = HcloudClient::new(server.uri(), "test-token");
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
         let v = client.get("/locations", &[]).await.unwrap();
         assert_eq!(v["locations"], serde_json::json!([]));
     }
@@ -199,7 +203,7 @@ mod tests {
     #[tokio::test]
     async fn traversal_paths_are_rejected_before_any_request() {
         // Base URL points nowhere; the guard must fire before a connection.
-        let client = HcloudClient::new("http://127.0.0.1:9", "test-token");
+        let client = HcloudClient::new("http://127.0.0.1:9", "test-token").unwrap();
         for bad in ["/ssh_keys/../servers/42", "/servers?admin=1", "/a#frag"] {
             let err = client.get(bad, &[]).await.unwrap_err();
             assert!(
@@ -218,7 +222,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = HcloudClient::new(server.uri(), "test-token");
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
         let v = client.delete("/ssh_keys/7").await.unwrap();
         assert_eq!(v, serde_json::json!({"success": true}));
     }
@@ -238,7 +242,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = HcloudClient::new(server.uri(), "test-token");
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
         let err = client.get("/servers", &[]).await.unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -258,7 +262,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = HcloudClient::new(server.uri(), "test-token");
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
         let err = client.get("/servers/9", &[]).await.unwrap_err();
         let msg = err.to_string();
         assert!(

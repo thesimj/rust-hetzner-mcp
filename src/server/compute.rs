@@ -22,7 +22,7 @@ const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
 
 /// Numeric ID of a single resource, shared by the get/delete-by-id tools.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct IdArgs {
+pub(crate) struct IdArgs {
     /// Numeric ID of the resource, as returned in the `id` field by this
     /// tool's corresponding list_* tool (e.g. list_servers for get_server).
     pub id: u64,
@@ -30,7 +30,7 @@ pub struct IdArgs {
 
 /// `page`/`per_page` pagination, shared by the list tools with no other filters.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PageArgs {
+pub(crate) struct PageArgs {
     /// Page number, 1-based.
     #[schemars(range(min = 1))]
     pub page: Option<u32>,
@@ -40,7 +40,7 @@ pub struct PageArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListServersArgs {
+pub(crate) struct ListServersArgs {
     /// Exact server name to filter by.
     pub name: Option<String>,
     /// Label selector, e.g. "env=prod".
@@ -58,7 +58,7 @@ pub struct ListServersArgs {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CreateServerArgs {
+pub(crate) struct CreateServerArgs {
     /// Name for the new server.
     pub name: String,
     /// Server type name or ID, e.g. "cx22".
@@ -86,7 +86,7 @@ pub struct CreateServerArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PowerServerArgs {
+pub(crate) struct PowerServerArgs {
     /// Server ID to act on.
     pub id: u64,
     /// Power action: one of poweron, poweroff, reboot, shutdown.
@@ -94,7 +94,7 @@ pub struct PowerServerArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListImagesArgs {
+pub(crate) struct ListImagesArgs {
     /// Filter by image type, e.g. "system" or "snapshot".
     #[serde(rename = "type")]
     pub r#type: Option<String>,
@@ -107,7 +107,7 @@ pub struct ListImagesArgs {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CreateSshKeyArgs {
+pub(crate) struct CreateSshKeyArgs {
     /// Name for the new SSH key.
     pub name: String,
     /// Public key material (OpenSSH format).
