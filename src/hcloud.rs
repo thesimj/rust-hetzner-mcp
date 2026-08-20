@@ -20,11 +20,15 @@ pub struct HcloudClient {
 }
 
 impl HcloudClient {
-    /// Read `HCLOUD_TOKEN` and point at the real API.
+    /// Read `HCLOUD_TOKEN` (required) and `HCLOUD_ENDPOINT` (optional base
+    /// URL override, same convention as the official hcloud CLI).
     pub fn from_env() -> Result<Self> {
         let token = std::env::var("HCLOUD_TOKEN")
             .context("HCLOUD_TOKEN environment variable is required")?;
-        Ok(Self::new(BASE_URL, token))
+        Ok(Self::new(
+            endpoint(std::env::var("HCLOUD_ENDPOINT").ok()),
+            token,
+        ))
     }
 
     /// Build a client against any base URL (tests point this at wiremock).
@@ -100,6 +104,14 @@ impl HcloudClient {
     }
 }
 
+/// The effective base URL: a non-empty `HCLOUD_ENDPOINT` wins, else the
+/// real API.
+fn endpoint(env_value: Option<String>) -> String {
+    env_value
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| BASE_URL.to_string())
+}
+
 /// `{"error": {"code", "message", "details"?}}` -> "code: message (details)";
 /// anything else -> the raw body, truncated.
 fn api_error_summary(body: &str) -> String {
@@ -126,6 +138,16 @@ mod tests {
     use super::*;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn endpoint_defaults_to_the_real_api_and_honours_a_non_empty_override() {
+        assert_eq!(endpoint(None), BASE_URL);
+        assert_eq!(endpoint(Some(String::new())), BASE_URL);
+        assert_eq!(
+            endpoint(Some("http://127.0.0.1:1/v1".into())),
+            "http://127.0.0.1:1/v1"
+        );
+    }
 
     #[test]
     fn api_error_summary_parses_the_error_envelope() {
