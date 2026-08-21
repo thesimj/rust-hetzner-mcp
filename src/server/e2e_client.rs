@@ -27,6 +27,18 @@ async fn initialize_list_and_call_flow_through_the_real_call_tool() {
         )
         .mount(&mock)
         .await;
+    // list_projects fans a fingerprint probe out to every project's token.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/servers"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            format!("Bearer {}", project_token("prod")),
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"servers": []})),
+        )
+        .mount(&mock)
+        .await;
 
     let tokens = BTreeMap::from([
         ("prod".to_string(), project_token("prod")),
@@ -76,6 +88,14 @@ async fn initialize_list_and_call_flow_through_the_real_call_tool() {
         parsed,
         serde_json::json!({"project": "staging", "result": {"servers": []}})
     );
+
+    // D3 item 5: list_projects must stay reachable with n>1 and no `project`
+    // argument at all - it is project-independent (regression class: B3).
+    let list_projects_result = client
+        .call_tool(CallToolRequestParams::new("list_projects"))
+        .await
+        .expect("tools/call list_projects");
+    assert_ne!(list_projects_result.is_error, Some(true));
 
     client.cancel().await.expect("cancel client");
     server_task.await.expect("server task");
