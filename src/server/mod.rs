@@ -18,8 +18,12 @@ use crate::hcloud::HcloudClient;
 
 mod compute;
 mod infra;
+mod lb_zone_ops;
 mod misc;
 mod net;
+mod netres_ops;
+mod res_ops;
+mod servers_ops;
 
 #[cfg(test)]
 mod test_support;
@@ -38,7 +42,11 @@ impl HcloudServer {
             tool_router: Self::compute_router()
                 + Self::infra_router()
                 + Self::net_router()
-                + Self::misc_router(),
+                + Self::misc_router()
+                + Self::servers_ops_router()
+                + Self::res_ops_router()
+                + Self::netres_ops_router()
+                + Self::lb_zone_ops_router(),
         }
     }
 }
@@ -49,11 +57,11 @@ impl ServerHandler for HcloudServer {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
                 "MCP server for the Hetzner Cloud API. Every list_*/get_* tool \
-                is read-only and safe to call freely. create_server creates a \
-                billable resource and create_ssh_key adds a persistent \
-                credential; delete_server, power_server, and delete_ssh_key are \
-                destructive - confirm with the user before calling any of \
-                these.",
+                is read-only and safe to call freely. Tools named create_*, \
+                update_*, delete_*, power_server, and *_action mutate real \
+                resources: creates may bill money, deletes are permanent, \
+                actions can interrupt workloads - confirm with the user before \
+                calling any of them.",
             );
         // The objective pins the latest MCP revision; rmcp does not default to
         // it, so name it explicitly (pinned by a test below).
@@ -162,7 +170,11 @@ mod tests {
         let parts = HcloudServer::compute_router().list_all().len()
             + HcloudServer::infra_router().list_all().len()
             + HcloudServer::net_router().list_all().len()
-            + HcloudServer::misc_router().list_all().len();
+            + HcloudServer::misc_router().list_all().len()
+            + HcloudServer::servers_ops_router().list_all().len()
+            + HcloudServer::res_ops_router().list_all().len()
+            + HcloudServer::netres_ops_router().list_all().len()
+            + HcloudServer::lb_zone_ops_router().list_all().len();
         assert_eq!(server.tool_router.list_all().len(), parts);
     }
 

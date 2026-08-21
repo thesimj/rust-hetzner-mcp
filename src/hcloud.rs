@@ -55,6 +55,11 @@ impl HcloudClient {
         self.send(req, path).await
     }
 
+    pub async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        let req = self.http.put(self.url(path)?).json(&body);
+        self.send(req, path).await
+    }
+
     pub async fn delete(&self, path: &str) -> Result<Value> {
         let req = self.http.delete(self.url(path)?);
         self.send(req, path).await
@@ -211,6 +216,29 @@ mod tests {
                 "path {bad} got: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn put_sends_bearer_auth_and_the_json_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/servers/1"))
+            .and(header("authorization", "Bearer test-token"))
+            .and(wiremock::matchers::body_json(
+                serde_json::json!({"name": "web"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"server": {"id": 1}})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
+        let v = client
+            .put("/servers/1", serde_json::json!({"name": "web"}))
+            .await
+            .unwrap();
+        assert_eq!(v["server"]["id"], 1);
     }
 
     #[tokio::test]
