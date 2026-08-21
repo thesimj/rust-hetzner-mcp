@@ -1,7 +1,30 @@
 # hetzner-mcp
 
-An MCP server for the Hetzner Cloud API, over stdio: full coverage of
-`api.hetzner.cloud/v1` across 92 tools.
+[![crates.io](https://img.shields.io/crates/v/hetzner-mcp.svg)](https://crates.io/crates/hetzner-mcp)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/Cargo.toml)
+
+An MCP (stdio) server for the [Hetzner Cloud API](https://docs.hetzner.cloud/),
+in a single Rust binary: full coverage of `api.hetzner.cloud/v1` across 92
+tools, from listing servers to managing DNS RRSets.
+
+## Features
+
+- **Full API coverage** - every resource group on `api.hetzner.cloud/v1`:
+  servers, images, server types, SSH keys, locations, datacenters, volumes,
+  networks, firewalls, Floating IPs, Primary IPs, Load Balancers, certificates,
+  ISOs, placement groups, DNS zones and RRSets, action polling, and pricing.
+- **Safety-annotated tools** - every tool declares `readOnlyHint` and
+  `destructiveHint` on the wire; billable creates and permanent deletes say so
+  in their descriptions, so MCP clients can gate confirmations correctly.
+- **Latest MCP revision** - speaks protocol `2026-07-28` (with automatic
+  negotiation down to older client revisions), pinned by tests.
+- **Guarded inputs** - action names are allowlisted against the official API
+  spec, path segments are validated before any URL is built, and an update
+  call with no fields set is rejected locally instead of sent.
+- **Local-only, zero state** - stdio transport, pure-Rust TLS
+  ([rustls](https://github.com/rustls/rustls)), no telemetry, no files
+  written, nothing persisted. See [Privacy Policy](#privacy-policy).
 
 ## Install
 
@@ -37,6 +60,37 @@ For any other MCP client, add it to your server config:
   }
 }
 ```
+
+## Connect another client (CLI, IDE, agent)
+
+`hetzner-mcp` is a universal local stdio MCP server. **[CONNECT.md](CONNECT.md)**
+has copy-paste setup for Claude Code, Codex CLI, Gemini CLI, Antigravity,
+Cursor, Windsurf, VS Code (Copilot), Zed, Cline, Roo Code, Continue, Goose,
+opencode, Crush, Amp, and OpenHands.
+
+## Credentials
+
+Create an API token in the Hetzner Cloud Console, per
+[Hetzner's guide](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token).
+Tokens are per-project and come in two flavors - **read-only** covers every
+`list_*`/`get_*` tool; pick **read & write** only if you need the mutating
+tools. Supply it as `HCLOUD_TOKEN` in your MCP client's `env` block, or export
+it in the shell that starts the client:
+
+```bash
+export HCLOUD_TOKEN="your-token-here"
+```
+
+On PowerShell:
+
+```powershell
+$env:HCLOUD_TOKEN = "your-token-here"
+```
+
+The server reads the token from the environment only - it does **not** load
+`.env` files. The token is sent solely to the Hetzner API as a bearer header;
+it is never logged or written to disk. Do not commit tokens; this repo's
+`.gitignore` already excludes `.env*`.
 
 ## Environment variables
 
@@ -199,6 +253,37 @@ for this server.
   mutating tools - Hetzner Cloud tokens can be created as read-only per
   project.
 
+## Verify the connection
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
+  | HCLOUD_TOKEN=your-token-here hetzner-mcp
+```
+
+A JSON line answering with `"name":"hetzner-mcp"` means stdio is healthy.
+More per-client verification tips: [CONNECT.md](CONNECT.md).
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+The test suite (134 tests) runs entirely against a local mock of the Hetzner
+API - no token and no network access to Hetzner are needed to develop.
+
+## Privacy Policy
+
+`hetzner-mcp` runs entirely on your machine and collects no telemetry. The only
+third party it contacts is Hetzner (`api.hetzner.cloud`), and only to fulfill
+the requests you make. Your API token is sent solely to Hetzner to authenticate
+those calls; the server writes no files and persists nothing. Full details:
+[PRIVACY.md](PRIVACY.md).
+
 ## License
 
-Apache-2.0
+Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE)).
+
+Copyright (c) 2026 Nick Bubelich

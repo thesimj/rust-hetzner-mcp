@@ -1,13 +1,14 @@
 [package]
 name = "hetzner-mcp"
 version = "0.2.0"
-authors = ["Nick Bubelich"]
+authors = ["Nick Bubelich <n+github@bubelich.com>"]
 edition = "2024"
 # Floor set by rmcp 3.x and our use of let-chains.
 rust-version = "1.88"
 description = "MCP server for the Hetzner Cloud API (servers, images, volumes, networks, firewalls and more) over stdio"
 license = "Apache-2.0"
 repository = "https://github.com/thesimj/rust-hetzner-mcp"
+homepage = "https://github.com/thesimj/rust-hetzner-mcp"
 readme = "README.md"
 keywords = ["mcp", "hetzner", "hcloud", "cloud", "ai"]
 categories = ["api-bindings", "command-line-utilities"]
