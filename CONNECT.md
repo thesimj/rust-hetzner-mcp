@@ -248,8 +248,8 @@ Docs: <https://docs.continue.dev/customize/deep-dives/mcp>
 ## Multiple projects
 
 `HCLOUD_TOKEN` also accepts comma-separated `name=token` pairs to configure
-more than one Hetzner project at once; `HCLOUD_PROJECT` optionally pins which
-one tools use by default. The multi-value form belongs in your MCP client's
+more than one Hetzner project at once; `HCLOUD_PROJECT` optionally sets the
+default project. The multi-value form belongs in your MCP client's
 `env` block - the official `hcloud` CLI reads the same variable, cannot parse
 it, and fails with a bare `401`:
 

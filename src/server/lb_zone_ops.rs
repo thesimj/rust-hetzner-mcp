@@ -1231,10 +1231,9 @@ mod tests {
         assert_eq!(tool_result_json(&res), serde_json::json!({"rrsets": []}));
     }
 
-    /// Sibling of the create_zone_rrset round-trip fix: this struct has no
-    /// `Serialize` impl (the query is built by hand above with literal
-    /// "name"/"type" keys), so plain field renames are enough here - but the
-    /// deserialize side must still accept the schema's own advertised names.
+    /// This struct has no `Serialize` impl (the query above is built by hand
+    /// with literal "name"/"type" keys), so a plain field rename is enough -
+    /// but deserialize must still accept the schema's advertised names.
     #[test]
     fn list_zone_rrsets_args_deserializes_from_its_advertised_field_names() {
         let args: ListZoneRrsetsArgs = serde_json::from_value(serde_json::json!({

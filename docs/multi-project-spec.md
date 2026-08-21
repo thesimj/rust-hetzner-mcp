@@ -468,6 +468,7 @@ Shipped per decisions R3/F2: the project-property description is 73
 characters ("Which configured Hetzner project to act on; call list_projects
 if unsure."), not the ~32-char guidance in §6.2. Re-measured 92-tool
 `tools/list` is **67,962 bytes**, with the pinned-default required-set
-semantics of D2 (mutating tools always require `project`). This supersedes
-§6.2's 32-char guidance and its 66,748/~74,985 baseline figures; §6.2 is left
-unedited as history.
+semantics of D2 (mutating tools always require `project`) — this is the
+single-project set (no `project` property; with it, 79,971 bytes / 79,317
+with a default project configured). This supersedes §6.2's 32-char guidance
+and its 66,748/~74,985 baseline figures; §6.2 is left unedited as history.
