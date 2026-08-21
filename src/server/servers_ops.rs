@@ -186,9 +186,7 @@ impl HcloudServer {
                 None,
             ));
         }
-        let body = args
-            .params
-            .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
+        let body = super::action_body(args.params);
         respond(
             self.client
                 .post(

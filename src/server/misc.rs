@@ -30,9 +30,8 @@ pub(crate) struct NameLabelSortTypePageArgs {
     pub label_selector: Option<String>,
     /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
     pub sort: Option<Vec<String>>,
-    /// Resource type filter, e.g. "uploaded"/"managed" (certificates) or
-    /// "spread" (placement groups); repeatable. `r#type`'s raw-identifier
-    /// prefix is already stripped by serde/schemars, so no rename is needed.
+    /// Resource type filter; repeatable. Certificates: "uploaded" or
+    /// "managed"; placement groups: "spread".
     pub r#type: Option<Vec<String>>,
     /// Page number to fetch, 1-based.
     #[schemars(range(min = 1))]

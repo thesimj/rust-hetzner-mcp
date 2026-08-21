@@ -239,8 +239,8 @@ mod tests {
             + HcloudServer::netres_ops_router().list_all().len()
             + HcloudServer::lb_zone_ops_router().list_all().len();
         assert_eq!(server.tool_router.list_all().len(), parts);
-        // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops (lb_zone 16)
-        // + 15 res_ops + 16 netres_ops + 15 lb_zone_ops.
+        // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops
+        // + 15 res_ops + 16 netres_ops + 16 lb_zone_ops.
         assert_eq!(server.tool_router.list_all().len(), 92);
     }
 
