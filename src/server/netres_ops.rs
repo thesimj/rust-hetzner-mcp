@@ -117,7 +117,6 @@ pub(crate) struct UpdateFirewallArgs {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct CreateFloatingIpArgs {
     /// Floating IP type: "ipv4" or "ipv6".
-    #[serde(rename = "type")]
     pub r#type: String,
     /// Home location name or ID. Only optional if `server` is given.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,16 +156,17 @@ pub(crate) struct CreatePrimaryIpArgs {
     /// Name for the resource. Must be unique per project.
     pub name: String,
     /// Primary IP type: "ipv4" or "ipv6".
-    #[serde(rename = "type")]
     pub r#type: String,
-    /// Type of resource to assign the Primary IP to. Omit to leave unassigned.
+    /// Type of resource to assign the Primary IP to: "server" is the only
+    /// accepted value. Omit to leave unassigned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee_type: Option<String>,
     /// ID of the resource to assign the Primary IP to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee_id: Option<u64>,
     /// Location name or ID to bind the Primary IP to. Omit if `assignee_id`/
-    /// `assignee_type` are given.
+    /// `assignee_type` are given. The current API spec has no separate
+    /// datacenter-level placement field for this request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     /// Whether to delete the Primary IP once its assigned resource is deleted.
@@ -196,7 +196,8 @@ pub(crate) struct UpdatePrimaryIpArgs {
 #[tool_router(router = netres_ops_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
-        description = "Create a private network. This creates a BILLABLE resource.",
+        description = "Create a private network. Networks themselves are free; only \
+        the resources you attach to them (e.g. servers) are billed.",
         annotations(
             title = "Create network",
             read_only_hint = false,
@@ -590,12 +591,63 @@ mod tests {
         );
     }
 
+    /// Sets every optional field, including the passthrough arrays, so a
+    /// rename of any field name (subnets/routes included) shows up as a
+    /// body mismatch rather than a silently-dropped field.
     #[tokio::test]
-    async fn update_network_excludes_id_from_the_body() {
+    async fn create_network_sends_every_field_when_all_optionals_are_set() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/networks"))
+            .and(body_json(serde_json::json!({
+                "name": "net-1",
+                "ip_range": "10.0.0.0/16",
+                "subnets": [{"type": "cloud", "ip_range": "10.0.1.0/24", "network_zone": "eu-central"}],
+                "routes": [{"destination": "10.100.1.0/24", "gateway": "10.0.1.1"}],
+                "expose_routes_to_vswitch": true,
+                "labels": {"env": "prod"}
+            })))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(serde_json::json!({"network": {"id": 1}})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .create_network(Parameters(CreateNetworkArgs {
+                name: "net-1".into(),
+                ip_range: "10.0.0.0/16".into(),
+                subnets: Some(vec![serde_json::json!({
+                    "type": "cloud", "ip_range": "10.0.1.0/24", "network_zone": "eu-central"
+                })]),
+                routes: Some(vec![
+                    serde_json::json!({"destination": "10.100.1.0/24", "gateway": "10.0.1.1"}),
+                ]),
+                expose_routes_to_vswitch: Some(true),
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"network": {"id": 1}})
+        );
+    }
+
+    /// Sets every optional field so a rename of any of them shows up as a
+    /// body mismatch, not a silently-dropped field; also proves `id` is
+    /// excluded from the body regardless of what else is set.
+    #[tokio::test]
+    async fn update_network_excludes_id_and_sends_every_other_field_when_set() {
         let mock = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path("/networks/5"))
-            .and(body_json(serde_json::json!({"name": "renamed"})))
+            .and(body_json(serde_json::json!({
+                "name": "renamed",
+                "labels": {"env": "prod"},
+                "expose_routes_to_vswitch": true
+            })))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"network": {"id": 5}})),
             )
@@ -607,8 +659,8 @@ mod tests {
             .update_network(Parameters(UpdateNetworkArgs {
                 id: 5,
                 name: Some("renamed".into()),
-                labels: None,
-                expose_routes_to_vswitch: None,
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
+                expose_routes_to_vswitch: Some(true),
             }))
             .await
             .unwrap();
@@ -647,12 +699,60 @@ mod tests {
         );
     }
 
+    /// Sets every optional field, including the passthrough arrays; see
+    /// create_network's twin for why.
     #[tokio::test]
-    async fn update_firewall_excludes_id_from_the_body() {
+    async fn create_firewall_sends_every_field_when_all_optionals_are_set() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/firewalls"))
+            .and(body_json(serde_json::json!({
+                "name": "fw-1",
+                "rules": [{
+                    "direction": "in", "protocol": "tcp", "port": "80",
+                    "source_ips": ["0.0.0.0/0"]
+                }],
+                "apply_to": [{"type": "label_selector", "label_selector": "env=prod"}],
+                "labels": {"env": "prod"}
+            })))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(serde_json::json!({"firewall": {"id": 1}})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .create_firewall(Parameters(CreateFirewallArgs {
+                name: "fw-1".into(),
+                rules: Some(vec![serde_json::json!({
+                    "direction": "in", "protocol": "tcp", "port": "80",
+                    "source_ips": ["0.0.0.0/0"]
+                })]),
+                apply_to: Some(vec![
+                    serde_json::json!({"type": "label_selector", "label_selector": "env=prod"}),
+                ]),
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"firewall": {"id": 1}})
+        );
+    }
+
+    /// Sets every optional field; see update_network's twin for why.
+    #[tokio::test]
+    async fn update_firewall_excludes_id_and_sends_every_other_field_when_set() {
         let mock = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path("/firewalls/3"))
-            .and(body_json(serde_json::json!({"name": "renamed"})))
+            .and(body_json(serde_json::json!({
+                "name": "renamed",
+                "labels": {"env": "prod"}
+            })))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({"firewall": {"id": 3}})),
@@ -665,7 +765,7 @@ mod tests {
             .update_firewall(Parameters(UpdateFirewallArgs {
                 id: 3,
                 name: Some("renamed".into()),
-                labels: None,
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
             }))
             .await
             .unwrap();
@@ -705,12 +805,55 @@ mod tests {
         );
     }
 
+    /// Sets every optional field; see create_network's twin for why.
     #[tokio::test]
-    async fn update_floating_ip_excludes_id_from_the_body() {
+    async fn create_floating_ip_sends_every_field_when_all_optionals_are_set() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/floating_ips"))
+            .and(body_json(serde_json::json!({
+                "type": "ipv4",
+                "home_location": "fsn1",
+                "server": 42,
+                "description": "my desc",
+                "name": "fip-1",
+                "labels": {"env": "prod"}
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "floating_ip": {"id": 1}
+            })))
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .create_floating_ip(Parameters(CreateFloatingIpArgs {
+                r#type: "ipv4".into(),
+                home_location: Some("fsn1".into()),
+                server: Some(42),
+                description: Some("my desc".into()),
+                name: Some("fip-1".into()),
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"floating_ip": {"id": 1}})
+        );
+    }
+
+    /// Sets every optional field; see update_network's twin for why.
+    #[tokio::test]
+    async fn update_floating_ip_excludes_id_and_sends_every_other_field_when_set() {
         let mock = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path("/floating_ips/6"))
-            .and(body_json(serde_json::json!({"name": "renamed"})))
+            .and(body_json(serde_json::json!({
+                "description": "new desc",
+                "labels": {"env": "prod"},
+                "name": "renamed"
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "floating_ip": {"id": 6}
             })))
@@ -721,8 +864,8 @@ mod tests {
         let res = server
             .update_floating_ip(Parameters(UpdateFloatingIpArgs {
                 id: 6,
-                description: None,
-                labels: None,
+                description: Some("new desc".into()),
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
                 name: Some("renamed".into()),
             }))
             .await
@@ -766,12 +909,57 @@ mod tests {
         );
     }
 
+    /// Sets every optional field; see create_network's twin for why.
     #[tokio::test]
-    async fn update_primary_ip_excludes_id_from_the_body() {
+    async fn create_primary_ip_sends_every_field_when_all_optionals_are_set() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/primary_ips"))
+            .and(body_json(serde_json::json!({
+                "name": "pip-1",
+                "type": "ipv4",
+                "assignee_type": "server",
+                "assignee_id": 42,
+                "location": "fsn1",
+                "auto_delete": true,
+                "labels": {"env": "prod"}
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "primary_ip": {"id": 1}
+            })))
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .create_primary_ip(Parameters(CreatePrimaryIpArgs {
+                name: "pip-1".into(),
+                r#type: "ipv4".into(),
+                assignee_type: Some("server".into()),
+                assignee_id: Some(42),
+                location: Some("fsn1".into()),
+                auto_delete: Some(true),
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"primary_ip": {"id": 1}})
+        );
+    }
+
+    /// Sets every optional field; see update_network's twin for why.
+    #[tokio::test]
+    async fn update_primary_ip_excludes_id_and_sends_every_other_field_when_set() {
         let mock = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path("/primary_ips/2"))
-            .and(body_json(serde_json::json!({"auto_delete": true})))
+            .and(body_json(serde_json::json!({
+                "name": "renamed",
+                "auto_delete": true,
+                "labels": {"env": "prod"}
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "primary_ip": {"id": 2}
             })))
@@ -782,9 +970,9 @@ mod tests {
         let res = server
             .update_primary_ip(Parameters(UpdatePrimaryIpArgs {
                 id: 2,
-                name: None,
+                name: Some("renamed".into()),
                 auto_delete: Some(true),
-                labels: None,
+                labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
             }))
             .await
             .unwrap();
@@ -837,44 +1025,38 @@ mod tests {
         }
     }
 
-    /// One row per action tool: posts `params` (or `{}` when omitted) to
-    /// `/{resource}/{id}/actions/{action}` and returns the envelope untouched.
+    /// One row per action tool with `params` set (the None -> `{}` default
+    /// is covered by every row of the allowlist-coverage test below).
     #[tokio::test]
     async fn action_tools_post_params_to_the_action_path() {
         let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/networks/9/actions/change_ip_range"))
-            .and(body_json(serde_json::json!({"ip_range": "10.0.0.0/24"})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/firewalls/4/actions/set_rules"))
-            .and(body_json(serde_json::json!({"rules": []})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/floating_ips/8/actions/assign"))
-            .and(body_json(serde_json::json!({"server": 42})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
-        // Also covers the None -> `{}` default for the whole group of tools.
-        Mock::given(method("POST"))
-            .and(path("/primary_ips/11/actions/unassign"))
-            .and(body_json(serde_json::json!({})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
+        for (route, body) in [
+            (
+                "/networks/9/actions/change_ip_range",
+                serde_json::json!({"ip_range": "10.0.0.0/24"}),
+            ),
+            (
+                "/firewalls/4/actions/set_rules",
+                serde_json::json!({"rules": []}),
+            ),
+            (
+                "/floating_ips/8/actions/assign",
+                serde_json::json!({"server": 42}),
+            ),
+            (
+                "/primary_ips/11/actions/assign",
+                serde_json::json!({"assignee_type": "server", "assignee_id": 42}),
+            ),
+        ] {
+            Mock::given(method("POST"))
+                .and(path(route))
+                .and(body_json(body))
+                .respond_with(
+                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
+                )
+                .mount(&mock)
+                .await;
+        }
 
         let server = server_for(mock.uri());
         for res in [
@@ -905,14 +1087,90 @@ mod tests {
             server
                 .primary_ip_action(Parameters(ActionArgs {
                     id: 11,
-                    action: "unassign".into(),
-                    params: None,
+                    action: "assign".into(),
+                    params: Some(serde_json::json!({"assignee_type": "server", "assignee_id": 42})),
                 }))
                 .await
                 .unwrap(),
         ] {
             assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
         }
+    }
+
+    /// Pins each group's allowlist to its exact expected array (catches a
+    /// garbled or cross-wired const), then proves every allowlisted name
+    /// reaches its own `/{group}/{id}/actions/{name}` path with `{}`.
+    #[tokio::test]
+    async fn action_tools_reach_every_allowlisted_action_path() {
+        assert_eq!(
+            NETWORK_ACTIONS,
+            [
+                "add_route",
+                "add_subnet",
+                "change_ip_range",
+                "change_protection",
+                "delete_route",
+                "delete_subnet"
+            ]
+        );
+        assert_eq!(
+            FIREWALL_ACTIONS,
+            ["apply_to_resources", "remove_from_resources", "set_rules"]
+        );
+        assert_eq!(
+            FLOATING_IP_ACTIONS,
+            ["assign", "unassign", "change_dns_ptr", "change_protection"]
+        );
+        assert_eq!(
+            PRIMARY_IP_ACTIONS,
+            ["assign", "unassign", "change_dns_ptr", "change_protection"]
+        );
+
+        let mock = MockServer::start().await;
+        for (group, actions) in [
+            ("networks", &NETWORK_ACTIONS[..]),
+            ("firewalls", &FIREWALL_ACTIONS[..]),
+            ("floating_ips", &FLOATING_IP_ACTIONS[..]),
+            ("primary_ips", &PRIMARY_IP_ACTIONS[..]),
+        ] {
+            for action in actions {
+                Mock::given(method("POST"))
+                    .and(path(format!("/{group}/1/actions/{action}")))
+                    .and(body_json(serde_json::json!({})))
+                    .respond_with(
+                        ResponseTemplate::new(201)
+                            .set_body_json(serde_json::json!({"action": {"command": action}})),
+                    )
+                    .mount(&mock)
+                    .await;
+            }
+        }
+
+        // Same call shape per group, only the tool method differs; a macro
+        // says that once instead of four near-identical loop bodies.
+        macro_rules! assert_reaches_every_action {
+            ($server:expr, $method:ident, $actions:expr) => {
+                for action in $actions {
+                    let res = $server
+                        .$method(Parameters(ActionArgs {
+                            id: 1,
+                            action: action.into(),
+                            params: None,
+                        }))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        tool_result_json(&res)["action"]["command"],
+                        serde_json::json!(action)
+                    );
+                }
+            };
+        }
+        let server = server_for(mock.uri());
+        assert_reaches_every_action!(server, network_action, NETWORK_ACTIONS);
+        assert_reaches_every_action!(server, firewall_action, FIREWALL_ACTIONS);
+        assert_reaches_every_action!(server, floating_ip_action, FLOATING_IP_ACTIONS);
+        assert_reaches_every_action!(server, primary_ip_action, PRIMARY_IP_ACTIONS);
     }
 
     /// One row per action tool: an action outside its allowlist is rejected
@@ -926,38 +1184,18 @@ mod tests {
             action: "nuke".into(),
             params: None,
         };
-        assert_eq!(
-            server
-                .network_action(Parameters(bad(1)))
-                .await
-                .unwrap_err()
-                .code,
-            ErrorCode::INVALID_PARAMS
-        );
-        assert_eq!(
-            server
-                .firewall_action(Parameters(bad(1)))
-                .await
-                .unwrap_err()
-                .code,
-            ErrorCode::INVALID_PARAMS
-        );
-        assert_eq!(
-            server
-                .floating_ip_action(Parameters(bad(1)))
-                .await
-                .unwrap_err()
-                .code,
-            ErrorCode::INVALID_PARAMS
-        );
-        assert_eq!(
-            server
-                .primary_ip_action(Parameters(bad(1)))
-                .await
-                .unwrap_err()
-                .code,
-            ErrorCode::INVALID_PARAMS
-        );
+        macro_rules! assert_rejects_bad_action {
+            ($server:expr, $method:ident) => {
+                assert_eq!(
+                    $server.$method(Parameters(bad(1))).await.unwrap_err().code,
+                    ErrorCode::INVALID_PARAMS
+                );
+            };
+        }
+        assert_rejects_bad_action!(server, network_action);
+        assert_rejects_bad_action!(server, firewall_action);
+        assert_rejects_bad_action!(server, floating_ip_action);
+        assert_rejects_bad_action!(server, primary_ip_action);
     }
 
     /// Mirrors compute's/infra's router annotation assertion: (read_only,
