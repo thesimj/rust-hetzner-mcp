@@ -102,7 +102,16 @@ function main() {
   mkdirSync(distDir, { recursive: true });
 
   // Patch the committed base manifest for this target.
-  const manifest = JSON.parse(readFileSync(join(ROOT, "mcpb", "manifest.json"), "utf8"));
+  const manifestPath = join(ROOT, "mcpb", "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+
+  // Keep the committed manifest.json's version in sync with Cargo.toml, so the
+  // git copy never drifts stale between releases (W3.7). Only `version` - the
+  // per-target entry_point/command/platforms below stay in the staged copy only.
+  if (manifest.version !== version) {
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, version }, null, 2) + "\n");
+  }
+
   manifest.version = version;
   manifest.server.entry_point = `bin/${BIN_NAME}${platform.exe}`;
   manifest.server.mcp_config.command = `\${__dirname}/bin/${BIN_NAME}${platform.exe}`;

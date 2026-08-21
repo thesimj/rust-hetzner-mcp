@@ -41,8 +41,10 @@ pub(crate) struct NameLabelSortTypePageArgs {
     pub per_page: Option<u32>,
 }
 
-fn name_label_sort_type_query(args: NameLabelSortTypePageArgs) -> Vec<(&'static str, String)> {
-    let mut q = pagination_query(args.page, args.per_page);
+fn name_label_sort_type_query(
+    args: NameLabelSortTypePageArgs,
+) -> Result<Vec<(&'static str, String)>, ErrorData> {
+    let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
     for sort in args.sort.into_iter().flatten() {
@@ -51,7 +53,7 @@ fn name_label_sort_type_query(args: NameLabelSortTypePageArgs) -> Vec<(&'static 
     for t in args.r#type.into_iter().flatten() {
         push_param(&mut q, "type", Some(t));
     }
-    q
+    Ok(q)
 }
 
 /// Pagination plus name/label/sort/mode filters for list_zones.
@@ -73,15 +75,15 @@ pub(crate) struct ZoneListArgs {
     pub per_page: Option<u32>,
 }
 
-fn zone_list_query(args: ZoneListArgs) -> Vec<(&'static str, String)> {
-    let mut q = pagination_query(args.page, args.per_page);
+fn zone_list_query(args: ZoneListArgs) -> Result<Vec<(&'static str, String)>, ErrorData> {
+    let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
     for sort in args.sort.into_iter().flatten() {
         push_param(&mut q, "sort", Some(sort));
     }
     push_param(&mut q, "mode", args.mode);
-    q
+    Ok(q)
 }
 
 /// Pagination plus name/architecture/wildcard filters for list_isos.
@@ -101,8 +103,8 @@ pub(crate) struct IsoListArgs {
     pub per_page: Option<u32>,
 }
 
-fn iso_list_query(args: IsoListArgs) -> Vec<(&'static str, String)> {
-    let mut q = pagination_query(args.page, args.per_page);
+fn iso_list_query(args: IsoListArgs) -> Result<Vec<(&'static str, String)>, ErrorData> {
+    let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "architecture", args.architecture);
     if let Some(wildcard) = args.include_architecture_wildcard {
@@ -112,7 +114,7 @@ fn iso_list_query(args: IsoListArgs) -> Vec<(&'static str, String)> {
             Some(wildcard.to_string()),
         );
     }
-    q
+    Ok(q)
 }
 
 #[tool_router(router = misc_router, vis = "pub(crate)")]
@@ -130,7 +132,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<NameLabelSortTypePageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = name_label_sort_type_query(args);
+        let query = name_label_sort_type_query(args)?;
         respond(self.client.get("/certificates", &query).await)
     }
 
@@ -167,7 +169,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<IsoListArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = iso_list_query(args);
+        let query = iso_list_query(args)?;
         respond(self.client.get("/isos", &query).await)
     }
 
@@ -200,7 +202,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<NameLabelSortTypePageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = name_label_sort_type_query(args);
+        let query = name_label_sort_type_query(args)?;
         respond(self.client.get("/placement_groups", &query).await)
     }
 
@@ -237,7 +239,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ZoneListArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = zone_list_query(args);
+        let query = zone_list_query(args)?;
         respond(self.client.get("/zones", &query).await)
     }
 

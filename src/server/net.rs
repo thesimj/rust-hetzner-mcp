@@ -37,14 +37,16 @@ pub(crate) struct NameLabelSortPageArgs {
     pub per_page: Option<u32>,
 }
 
-fn name_label_sort_query(args: NameLabelSortPageArgs) -> Vec<(&'static str, String)> {
-    let mut q = pagination_query(args.page, args.per_page);
+fn name_label_sort_query(
+    args: NameLabelSortPageArgs,
+) -> Result<Vec<(&'static str, String)>, ErrorData> {
+    let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
     for sort in args.sort.into_iter().flatten() {
         push_param(&mut q, "sort", Some(sort));
     }
-    q
+    Ok(q)
 }
 
 /// Filters for list_primary_ips: name, label selector, exact IP, sort, and pagination.
@@ -95,7 +97,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<NameLabelSortPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = name_label_sort_query(args);
+        let query = name_label_sort_query(args)?;
         respond(self.client.get("/floating_ips", &query).await)
     }
 
@@ -132,7 +134,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ListPrimaryIpsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut query = pagination_query(args.page, args.per_page);
+        let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
         push_param(&mut query, "ip", args.ip);
@@ -175,7 +177,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<NameLabelSortPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = name_label_sort_query(args);
+        let query = name_label_sort_query(args)?;
         respond(self.client.get("/load_balancers", &query).await)
     }
 
@@ -212,7 +214,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ListLoadBalancerTypesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut query = pagination_query(args.page, args.per_page);
+        let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.name);
         respond(self.client.get("/load_balancer_types", &query).await)
     }

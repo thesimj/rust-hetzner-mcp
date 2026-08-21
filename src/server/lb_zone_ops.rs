@@ -14,8 +14,8 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, pagination_query, push_param,
-    require_update_fields, respond, validate_zone_id,
+    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, check_action, push_param,
+    raw_pagination_query, require_update_fields, respond, validate_zone_id,
 };
 
 const LB_ACTIONS: [&str; 13] = [
@@ -56,21 +56,6 @@ const RRSET_ACTIONS: [&str; 6] = [
     "remove_records",
     "update_records",
 ];
-
-fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
-    if allowed.contains(&action) {
-        Ok(())
-    } else {
-        Err(ErrorData::invalid_params(
-            format!(
-                "action must be one of {}, got {:?}",
-                allowed.join(", "),
-                action
-            ),
-            None,
-        ))
-    }
-}
 
 /// RRSet `name` path segment: non-empty, at most [`MAX_ZONE_ID_LEN`] chars,
 /// not exactly ".", no ".." substring, `[A-Za-z0-9._@*-]`. Same hole as
@@ -346,6 +331,7 @@ impl HcloudServer {
         full existing set, not a merge.",
         annotations(
             title = "Update Load Balancer",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -474,6 +460,7 @@ impl HcloudServer {
         not a merge.",
         annotations(
             title = "Update Zone",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -570,7 +557,7 @@ impl HcloudServer {
         Parameters(args): Parameters<ListZoneRrsetsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         validate_zone_id(&args.id_or_name)?;
-        let mut query = pagination_query(args.page, args.per_page);
+        let mut query = raw_pagination_query(args.page, args.per_page);
         push_param(&mut query, "name", args.rr_name);
         push_param(&mut query, "label_selector", args.label_selector);
         for t in args.rr_type.into_iter().flatten() {
@@ -643,6 +630,7 @@ impl HcloudServer {
         not a merge.",
         annotations(
             title = "Update Zone RRSet",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -733,7 +721,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::server::test_support::{server_for, tool_result_json};
+    use crate::server::test_support::{dead_server, server_for, tool_result_json};
 
     /// `*_action` `params` is object-typed (N2); tests build it from a JSON
     /// object literal for readability.
@@ -751,13 +739,6 @@ mod tests {
             .collect();
         v.push("a".repeat(254));
         v
-    }
-
-    /// A dead port: if the tool under test skips validation and attempts a
-    /// request, `respond()` turns the transport failure into `Ok(isError)`,
-    /// so `.unwrap_err()` below only succeeds when validation short-circuited.
-    fn dead_server() -> HcloudServer {
-        server_for("http://127.0.0.1:9".to_string())
     }
 
     /// Asserts a tool call rejects before any request is attempted (see `dead_server`).

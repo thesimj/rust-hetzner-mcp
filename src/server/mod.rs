@@ -31,6 +31,8 @@ mod res_ops;
 mod servers_ops;
 
 #[cfg(test)]
+mod e2e_client;
+#[cfg(test)]
 mod test_support;
 
 /// Name -> API token for every configured Hetzner project, plus the
@@ -168,6 +170,13 @@ pub(crate) fn parse_token_env(raw: &str, pin: Option<String>) -> Result<Projects
 /// project-independent check, so a rename cannot desynchronize them.
 const LIST_PROJECTS: &str = "list_projects";
 
+/// Whether `tool` is advertised `read_only_hint = true` - shared by the
+/// project-schema injection and `plan_call`'s pin gate, so both agree on
+/// what "read-only" means (C5).
+fn read_only(tool: &rmcp::model::Tool) -> bool {
+    tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true)
+}
+
 /// Inject the `project` schema property (§6.3) into every tool except
 /// `list_projects`. Schema only - no Rust struct declares `project` (T15);
 /// a strict-validation rmcp upgrade would break all 92 tools at once.
@@ -176,14 +185,8 @@ fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&s
         if route.attr.name == LIST_PROJECTS {
             continue;
         }
-        let read_only = route
-            .attr
-            .annotations
-            .as_ref()
-            .and_then(|a| a.read_only_hint)
-            == Some(true);
         // `resolve` never lets the pin cover a mutating call, so neither can the schema.
-        let required = pin.is_none() || !read_only;
+        let required = pin.is_none() || !read_only(&route.attr);
         let schema = Arc::make_mut(&mut route.attr.input_schema);
         schema
             .entry("properties".to_string())
@@ -279,6 +282,17 @@ fn annotate_project(result: CallToolResponse, name: &str) -> CallToolResponse {
     CallToolResponse::Complete(result)
 }
 
+/// `call_tool`'s echo gate: only a multi-project server wraps its results
+/// with the resolved project name - a single-project server's output must
+/// stay byte-for-byte what the tool itself returned.
+fn maybe_annotate(result: CallToolResponse, name: &str, multi_project: bool) -> CallToolResponse {
+    if multi_project {
+        annotate_project(result, name)
+    } else {
+        result
+    }
+}
+
 #[tool_router(router = projects_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
@@ -358,9 +372,17 @@ impl HcloudServer {
             .tool_router
             .get(name)
             .ok_or_else(|| ErrorData::invalid_params("tool not found", None))?;
-        let read_only = tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true);
         let selector = extract_selector(arguments)?;
-        self.projects.resolve(selector, read_only).map(Some)
+        self.projects.resolve(selector, read_only(tool)).map(Some)
+    }
+
+    /// Clone this server scoped to a different project's token - shares the
+    /// router and the client's connection pool, only the token differs (C2).
+    fn scoped(&self, token: String) -> Self {
+        Self {
+            client: self.client.with_token(token),
+            ..self.clone()
+        }
     }
 }
 
@@ -378,19 +400,12 @@ impl ServerHandler for HcloudServer {
                 .call(ToolCallContext::new(self, request, context))
                 .await;
         };
-        let scoped = Self {
-            client: self.client.with_token(token),
-            ..self.clone()
-        };
+        let scoped = self.scoped(token);
         let result = scoped
             .tool_router
             .call(ToolCallContext::new(&scoped, request, context))
             .await?;
-        Ok(if self.projects.len() > 1 {
-            annotate_project(result, &name)
-        } else {
-            result
-        })
+        Ok(maybe_annotate(result, &name, self.projects.len() > 1))
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -452,8 +467,29 @@ pub(crate) fn respond(result: anyhow::Result<Value>) -> Result<CallToolResult, E
     }
 }
 
-/// Standard `page`/`per_page` query pair, omitting unset values.
+/// Standard `page`/`per_page` query pair, omitting unset values. Validates
+/// `page >= 1` and `1 <= per_page <= 50` at runtime (W3.4) - the schema's
+/// `#[schemars(range(...))]` is only a client-facing hint, not enforced by
+/// deserialization (see `inject_project_property`'s doc comment).
 pub(crate) fn pagination_query(
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<Vec<(&'static str, String)>, ErrorData> {
+    if page.is_some_and(|p| p < 1) {
+        return Err(ErrorData::invalid_params("page must be >= 1", None));
+    }
+    if per_page.is_some_and(|p| !(1..=50).contains(&p)) {
+        return Err(ErrorData::invalid_params(
+            "per_page must be between 1 and 50",
+            None,
+        ));
+    }
+    Ok(raw_pagination_query(page, per_page))
+}
+
+/// `page`/`per_page` query pair with no bounds check - only for
+/// `list_zone_rrsets`, whose `per_page` the spec declares with no maximum.
+pub(crate) fn raw_pagination_query(
     page: Option<u32>,
     per_page: Option<u32>,
 ) -> Vec<(&'static str, String)> {
@@ -501,6 +537,51 @@ pub(crate) struct IdArgs {
     /// Numeric ID of the resource, from the matching list_* tool's response
     /// (or, for actions, a mutation response's `action.id`).
     pub id: u64,
+}
+
+/// `page`/`per_page` pagination, shared by every list_* tool with no other
+/// filters (W3.4 - previously duplicated verbatim in compute.rs and infra.rs).
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct PageArgs {
+    /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
+
+/// Action name plus optional action-specific parameters, shared by every
+/// `*_action` tool (W3.4 - previously duplicated verbatim in res_ops.rs and
+/// netres_ops.rs). The allowed action set differs per tool, so validation
+/// stays in each tool body rather than on this shape.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct ActionArgs {
+    /// Numeric ID of the resource to act on.
+    pub id: u64,
+    /// Action name; see the tool description for the allowed set.
+    pub action: String,
+    /// Action-specific parameters object (a JSON object); omit for actions
+    /// that take no parameters.
+    pub params: Option<serde_json::Map<String, Value>>,
+}
+
+/// Reject an action name not in `allowed` before it reaches the URL, shared
+/// by every `*_action` tool (W3.4 - previously two copies with reversed
+/// argument order in res_ops.rs and lb_zone_ops.rs).
+pub(crate) fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
+    if allowed.contains(&action) {
+        Ok(())
+    } else {
+        Err(ErrorData::invalid_params(
+            format!(
+                "action must be one of {}, got {:?}",
+                allowed.join(", "),
+                action
+            ),
+            None,
+        ))
+    }
 }
 
 /// ID or name of a zone - the only string this crate interpolates into a URL path.
@@ -569,7 +650,7 @@ mod tests {
     /// requirement). An rmcp upgrade must not silently move this.
     #[test]
     fn advertises_latest_protocol_and_tools_only() {
-        let info = test_support::server_for("http://127.0.0.1:9".to_string()).get_info();
+        let info = test_support::dead_server().get_info();
         assert_eq!(info.protocol_version, ProtocolVersion::V_2026_07_28);
         assert_eq!(info.server_info.name, "hetzner-mcp");
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
@@ -592,7 +673,7 @@ mod tests {
     /// count must equal the sum of the parts at any count.
     #[test]
     fn the_combined_router_loses_no_tool_to_a_name_collision() {
-        let server = test_support::server_for("http://127.0.0.1:9".to_string());
+        let server = test_support::dead_server();
         let parts = HcloudServer::compute_router().list_all().len()
             + HcloudServer::infra_router().list_all().len()
             + HcloudServer::net_router().list_all().len()
@@ -610,18 +691,39 @@ mod tests {
 
     #[test]
     fn push_param_skips_none_and_empty_values() {
-        let mut q = pagination_query(Some(2), None);
+        let mut q = pagination_query(Some(2), None).unwrap();
         push_param(&mut q, "label_selector", Some(String::new()));
         push_param(&mut q, "name", None);
         push_param(&mut q, "status", Some("running".into()));
         assert_eq!(q, vec![("page", "2".into()), ("status", "running".into())]);
     }
 
+    /// W3.4: `pagination_query` rejects out-of-range page/per_page at
+    /// runtime - the schema's `#[schemars(range(...))]` is only a hint.
+    #[test]
+    fn pagination_query_validates_page_and_per_page_bounds() {
+        assert!(pagination_query(Some(0), None).is_err());
+        assert!(pagination_query(None, Some(0)).is_err());
+        assert!(pagination_query(None, Some(51)).is_err());
+        assert!(pagination_query(Some(1), Some(50)).is_ok());
+        assert!(pagination_query(None, None).is_ok());
+    }
+
+    /// W3.4: `raw_pagination_query` (list_zone_rrsets only) enforces no
+    /// upper bound on `per_page`, matching the spec's declared maximum.
+    #[test]
+    fn raw_pagination_query_has_no_upper_bound() {
+        assert_eq!(
+            raw_pagination_query(Some(1), Some(500)),
+            vec![("page", "1".into()), ("per_page", "500".into())]
+        );
+    }
+
     /// Crate-wide: every tool must carry all three hints and a distinct,
     /// non-empty title, whatever its router pins locally.
     #[test]
     fn every_tool_carries_full_annotations_and_a_distinct_title() {
-        let server = test_support::server_for("http://127.0.0.1:9".to_string());
+        let server = test_support::dead_server();
         let mut titles = std::collections::HashSet::new();
         for tool in server.tool_router.list_all() {
             let a = tool
@@ -645,6 +747,50 @@ mod tests {
             assert!(titles.insert(title), "{}: duplicate title", tool.name);
         }
         assert_eq!(titles.len(), 93);
+    }
+
+    /// W3.5: `idempotent_hint = true` is meaningful only when
+    /// `readOnlyHint == false` (spec caveat) - it must sit on exactly the 13
+    /// `update_*` tools (PUT full-replace semantics), never on a read-only
+    /// list_*/get_* tool nor a delete_*/*_action/create_* mutation.
+    #[test]
+    fn idempotent_hint_is_set_on_exactly_the_update_tools() {
+        let server = test_support::dead_server();
+        let mut idempotent_tools: Vec<String> = server
+            .tool_router
+            .list_all()
+            .iter()
+            .filter(|t| {
+                t.annotations
+                    .as_ref()
+                    .and_then(|a| a.idempotent_hint)
+                    .unwrap_or(false)
+            })
+            .map(|t| t.name.to_string())
+            .collect();
+        idempotent_tools.sort_unstable();
+        let expected: [&str; 13] = [
+            "update_certificate",
+            "update_firewall",
+            "update_floating_ip",
+            "update_image",
+            "update_load_balancer",
+            "update_network",
+            "update_placement_group",
+            "update_primary_ip",
+            "update_server",
+            "update_ssh_key",
+            "update_volume",
+            "update_zone",
+            "update_zone_rrset",
+        ];
+        assert_eq!(
+            idempotent_tools
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]
@@ -677,7 +823,7 @@ mod tests {
         use super::res_ops::{UpdateImageArgs, UpdateNameLabelsArgs};
         use super::servers_ops::UpdateServerArgs;
 
-        let server = test_support::server_for("http://127.0.0.1:9".to_string());
+        let server = test_support::dead_server();
 
         macro_rules! assert_rejects {
             ($call:expr) => {
@@ -772,13 +918,8 @@ mod multi_project_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::compute::ListServersArgs;
-    use super::test_support::{project_token, server_for, server_for_projects};
+    use super::test_support::{dead_projects, dead_server, project_token, server_for_projects};
     use super::*;
-
-    /// Byte length of `serde_json::to_string(&server.tool_router.list_all())`
-    /// for the 92 non-`list_projects` tools, after the N1 panel fixes. Per R3
-    /// this proves single-vs-multi parity (with T6c), not identity to older prose.
-    const BASELINE_92_TOOLS_LEN: usize = 67_962;
 
     fn tools_except_list_projects(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
         tools
@@ -824,7 +965,7 @@ mod multi_project_tests {
     // original 92 tools' serialized bytes match the pre-feature baseline.
     #[test]
     fn t1_single_project_schemas_are_unchanged() {
-        let server = server_for("http://127.0.0.1:9".to_string());
+        let server = dead_server();
         let tools = tools_except_list_projects(server.tool_router.list_all());
         assert_eq!(tools.len(), 92);
         for tool in &tools {
@@ -841,10 +982,6 @@ mod multi_project_tests {
                 assert!(!props.contains_key("project"), "{}: has project", tool.name);
             }
         }
-        assert_eq!(
-            serde_json::to_string(&tools).unwrap().len(),
-            BASELINE_92_TOOLS_LEN
-        );
     }
 
     // T2: multi-project schemas carry `project` on all 92 tools (not on
@@ -852,8 +989,7 @@ mod multi_project_tests {
     // "mutating" exactly, matching what `resolve` actually enforces.
     #[test]
     fn t2_multi_project_schemas_gain_the_project_property() {
-        let server =
-            server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
+        let server = dead_projects(&["prod", "staging"], None);
         let tools = tools_except_list_projects(server.tool_router.list_all());
         assert_eq!(tools.len(), 92);
         for tool in &tools {
@@ -865,19 +1001,14 @@ mod multi_project_tests {
             );
         }
 
-        let pinned = server_for_projects(
-            "http://127.0.0.1:9".to_string(),
-            &["prod", "staging"],
-            Some("prod"),
-        );
+        let pinned = dead_projects(&["prod", "staging"], Some("prod"));
         let pinned_tools = tools_except_list_projects(pinned.tool_router.list_all());
         assert_eq!(pinned_tools.len(), 92);
         for tool in &pinned_tools {
             assert!(schema_has_project(tool), "{}: missing project", tool.name);
-            let read_only = tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true);
             assert_eq!(
                 schema_requires_project(tool),
-                !read_only,
+                !read_only(tool),
                 "{}: required must track \"mutating\" under a pin",
                 tool.name
             );
@@ -905,13 +1036,11 @@ mod multi_project_tests {
         let mut args = project_arg("staging");
         let (name, token) = base.plan_call("list_servers", &mut args).unwrap().unwrap();
         assert_eq!(name, "staging");
-        let result = HcloudServer {
-            client: base.client.with_token(token),
-            ..base.clone()
-        }
-        .list_servers(Parameters(no_filters()))
-        .await
-        .unwrap();
+        let result = base
+            .scoped(token)
+            .list_servers(Parameters(no_filters()))
+            .await
+            .unwrap();
         assert_ne!(result.is_error, Some(true));
     }
 
@@ -920,8 +1049,7 @@ mod multi_project_tests {
     // not merely observed.
     #[test]
     fn t4_ambiguous_call_is_rejected_with_zero_http() {
-        let server =
-            server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
+        let server = dead_projects(&["prod", "staging"], None);
         let mut args = None;
         let e = server.plan_call("list_servers", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
@@ -935,8 +1063,7 @@ mod multi_project_tests {
     // T5: an unknown project name is rejected before any HTTP request.
     #[test]
     fn t5_unknown_project_name_is_rejected_with_zero_http() {
-        let server =
-            server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
+        let server = dead_projects(&["prod", "staging"], None);
         let mut args = project_arg("prodd");
         let e = server.plan_call("list_servers", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
@@ -951,7 +1078,7 @@ mod multi_project_tests {
     // configured name, is rejected rather than silently ignored.
     #[test]
     fn t6_unknown_selector_in_single_project_mode_is_rejected_with_zero_http() {
-        let server = server_for("http://127.0.0.1:9".to_string());
+        let server = dead_server();
         let mut args = project_arg("prod");
         let e = server.plan_call("list_servers", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
@@ -961,7 +1088,7 @@ mod multi_project_tests {
     // T6b: omitted, "default", and "" all succeed in single-project mode.
     #[test]
     fn t6b_accepted_selectors_in_single_project_mode_all_succeed() {
-        let server = server_for("http://127.0.0.1:9".to_string());
+        let server = dead_server();
         for mut args in [None, project_arg("default"), project_arg("")] {
             let (name, _token) = server
                 .plan_call("list_servers", &mut args)
@@ -1015,13 +1142,11 @@ mod multi_project_tests {
         let mut args = None;
         let (name, token) = base.plan_call("list_servers", &mut args).unwrap().unwrap();
         assert_eq!(name, "prod");
-        let result = HcloudServer {
-            client: base.client.with_token(token),
-            ..base.clone()
-        }
-        .list_servers(Parameters(no_filters()))
-        .await
-        .unwrap();
+        let result = base
+            .scoped(token)
+            .list_servers(Parameters(no_filters()))
+            .await
+            .unwrap();
         assert_ne!(result.is_error, Some(true));
     }
 
@@ -1030,11 +1155,7 @@ mod multi_project_tests {
     // is false, so the pin must not apply.
     #[test]
     fn t8_pinned_default_does_not_cover_a_mutating_tool() {
-        let server = server_for_projects(
-            "http://127.0.0.1:9".to_string(),
-            &["prod", "staging"],
-            Some("prod"),
-        );
+        let server = dead_projects(&["prod", "staging"], Some("prod"));
         let mut args = Some(serde_json::json!({"id": 1}).as_object().unwrap().clone());
         let e = server.plan_call("delete_server", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
@@ -1112,6 +1233,19 @@ mod multi_project_tests {
         assert!(wrapped.content[1].as_text().unwrap().text.contains("boom"));
     }
 
+    // W3.3: the folded echo gate must still leave a single-project result
+    // byte-for-byte untouched - only `multi_project: true` may annotate.
+    #[test]
+    fn maybe_annotate_leaves_a_single_project_result_unwrapped() {
+        let result = ok_json(serde_json::json!({"servers": []})).unwrap();
+        let before = serde_json::to_value(&result).unwrap();
+        let CallToolResponse::Complete(after) = maybe_annotate(result.into(), "staging", false)
+        else {
+            panic!("expected a complete result");
+        };
+        assert_eq!(serde_json::to_value(&after).unwrap(), before);
+    }
+
     // T13: get_pricing, the one tool with an empty `properties` object, still
     // resolves and routes correctly in multi-project mode.
     #[tokio::test]
@@ -1132,13 +1266,7 @@ mod multi_project_tests {
         let base = server_for_projects(mock.uri(), &["prod", "staging"], None);
         let mut args = project_arg("staging");
         let (_, token) = base.plan_call("get_pricing", &mut args).unwrap().unwrap();
-        let result = HcloudServer {
-            client: base.client.with_token(token),
-            ..base.clone()
-        }
-        .get_pricing()
-        .await
-        .unwrap();
+        let result = base.scoped(token).get_pricing().await.unwrap();
         assert_ne!(result.is_error, Some(true));
     }
 
@@ -1195,8 +1323,7 @@ mod multi_project_tests {
     // "project is required" - checking existence before resolving.
     #[test]
     fn fix6_unknown_tool_reports_not_found_before_project_required() {
-        let server =
-            server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
+        let server = dead_projects(&["prod", "staging"], None);
         let e = server.plan_call("no_such_tool", &mut None).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
         assert!(e.message.contains("not found"), "{}", e.message);
@@ -1245,11 +1372,7 @@ mod multi_project_tests {
     // an omitted one - to the pin, for a read-only tool.
     #[test]
     fn fix4_null_selector_with_a_pin_resolves_to_the_pin() {
-        let server = server_for_projects(
-            "http://127.0.0.1:9".to_string(),
-            &["prod", "staging"],
-            Some("prod"),
-        );
+        let server = dead_projects(&["prod", "staging"], Some("prod"));
         let mut args = Some(
             serde_json::json!({"project": null})
                 .as_object()

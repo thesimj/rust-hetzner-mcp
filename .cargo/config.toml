@@ -11,9 +11,11 @@
 # missing-DLL error. (The `api-ms-win-crt-*` UCRT DLLs are part of Windows 10/11,
 # so the VC++ runtime is the only gap `+crt-static` closes.)
 #
-# Deliberately NOT set here: `-C force-unwind-tables=yes`. This crate keeps the
-# default `panic = "unwind"`, which already carries unwind tables, so the flag
-# would be redundant.
+# Deliberately NOT set here: `-C force-unwind-tables=yes`. This crate SHIPS
+# `panic = "abort"` in [profile.release] (Cargo.toml) - the .mcpb build is a
+# release build, so a Rust panic here never unwinds, making the flag moot.
+# (An earlier version of this comment wrongly claimed the default `panic =
+# "unwind"` was in effect; it never was for the shipped binary.)
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 
