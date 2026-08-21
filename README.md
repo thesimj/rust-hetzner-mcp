@@ -5,8 +5,8 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/Cargo.toml)
 
 An MCP (stdio) server for the [Hetzner Cloud API](https://docs.hetzner.cloud/),
-in a single Rust binary: full coverage of `api.hetzner.cloud/v1` across 92
-tools, from listing servers to managing DNS RRSets.
+in a single Rust binary: 92 tools covering every resource group of
+`api.hetzner.cloud/v1`, from listing servers to managing DNS RRSets.
 
 ## Features
 
@@ -20,10 +20,10 @@ tools, from listing servers to managing DNS RRSets.
 - **Latest MCP revision** - speaks protocol `2026-07-28` (with automatic
   negotiation down to older client revisions), pinned by tests.
 - **Guarded inputs** - action names are allowlisted against the official API
-  spec, path segments are validated before any URL is built, and an update
+  spec (all 11 allowlists match the spec exactly, in order), path segments are validated before any URL is built, and an update
   call with no fields set is rejected locally instead of sent.
-- **Local-only, zero state** - stdio transport, pure-Rust TLS
-  ([rustls](https://github.com/rustls/rustls)), no telemetry, no files
+- **Local-only, zero state** - stdio transport, TLS via
+  [rustls](https://github.com/rustls/rustls), no telemetry, no files
   written, nothing persisted. See [Privacy Policy](#privacy-policy).
 
 ## Install
@@ -90,7 +90,7 @@ $env:HCLOUD_TOKEN = "your-token-here"
 The server reads the token from the environment only - it does **not** load
 `.env` files. The token is sent solely to the Hetzner API as a bearer header;
 it is never logged or written to disk. Do not commit tokens; this repo's
-`.gitignore` already excludes `.env*`.
+`.gitignore` already excludes `.env` and `.env.*`.
 
 ## Environment variables
 
@@ -231,12 +231,17 @@ object; the allowed actions are noted after each.
 
 ## Coverage
 
-Full coverage of `api.hetzner.cloud/v1`: servers (full CRUD, metrics, the
+Every resource group and every mutating action endpoint of
+`api.hetzner.cloud/v1`: servers (full CRUD, metrics, the
 23-action `server_action`, and `power_server`), images, server types, SSH
 keys, locations, datacenters, volumes, networks, firewalls, Floating IPs,
 Primary IPs, Load Balancers (+ types, metrics, the 13-action
 `load_balancer_action`), certificates, ISOs, placement groups, DNS zones
 (+ RRSets), global actions polling, and pricing.
+
+The per-resource action-listing endpoints (`GET /<resource>/actions` and
+friends) are not exposed as separate tools - poll actions with `list_actions`
+/ `get_action` instead, which return the same action objects.
 
 Storage Boxes are excluded: they live on a separate API
 (`api.hetzner.com`), not `api.hetzner.cloud/v1`, so they are out of scope

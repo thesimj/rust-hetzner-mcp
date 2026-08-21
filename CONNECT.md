@@ -147,7 +147,7 @@ extensions:
 ```
 Easiest: run `goose configure` -> Add Extension -> Command-line Extension (stdio) ->
 command `hetzner-mcp` -> add `HCLOUD_TOKEN`.
-Docs: <https://block.github.io/goose/docs/getting-started/using-extensions>
+Docs: <https://goose-docs.ai/docs/getting-started/using-extensions>
 
 ### Amp (Sourcegraph)
 `~/.config/amp/settings.json`, key `amp.mcpServers`:
@@ -161,7 +161,6 @@ Docs: <https://block.github.io/goose/docs/getting-started/using-extensions>
   }
 }
 ```
-Or: `amp mcp add hetzner --env HCLOUD_TOKEN=your-token -- hetzner-mcp`.
 Docs: <https://ampcode.com/manual>
 
 ### OpenHands (All Hands AI)
@@ -182,14 +181,14 @@ Docs: <https://docs.openhands.dev/openhands/usage/settings/mcp-settings>
 `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global) - canonical
 `mcpServers` shape. Docs: <https://cursor.com/docs/mcp>
 
-### Windsurf (Codeium)
-`~/.codeium/windsurf/mcp_config.json` (Linux: `~/.config/windsurf/mcp_config.json`)
-- canonical `mcpServers` shape. Edit via Cascade -> Plugins -> *View raw config*;
-Windsurf hot-reloads on save. Docs: <https://docs.windsurf.com/windsurf/cascade/mcp>
+### Windsurf
+`~/.codeium/windsurf/mcp_config.json` (same path on macOS and Linux) -
+canonical `mcpServers` shape; Windsurf hot-reloads on save.
+Docs: <https://docs.devin.ai/desktop/cascade/mcp>
 
 ### VS Code (GitHub Copilot, agent mode) ⚠️
 `.vscode/mcp.json` - **the odd one out**: top-level key is `servers` (not
-`mcpServers`) and `type: "stdio"` is **required**:
+`mcpServers`); `type: "stdio"` is accepted but optional:
 ```json
 {
   "servers": {
@@ -228,11 +227,12 @@ and `autoApprove` fields).
 
 ### Roo Code
 `.roo/mcp.json` (project) or the global settings file via the MCP UI - key
-`mcpServers`, canonical shape. Supports `${env:HCLOUD_TOKEN}` expansion.
+`mcpServers`, canonical shape.
 Docs: <https://docs.roocode.com/features/mcp/using-mcp-in-roo>
 
 ### Continue
-**YAML** at `~/.continue/config.yaml` - `mcpServers` is a **list**:
+**YAML** - one file per server under `.continue/mcpServers/*.yaml` (or the
+legacy `~/.continue/config.yaml`); `mcpServers` is a **list**:
 ```yaml
 mcpServers:
   - name: hetzner

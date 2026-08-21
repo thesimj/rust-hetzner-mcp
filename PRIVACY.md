@@ -15,7 +15,9 @@ its own.
 ## What the software sends, and to whom
 
 `hetzner-mcp` communicates with exactly one third party - **Hetzner**
-(`api.hetzner.cloud`, or the endpoint you set via `HCLOUD_ENDPOINT`) - and only
+(`api.hetzner.cloud`, or the endpoint you set via `HCLOUD_ENDPOINT`), plus any
+HTTP proxy you yourself configure via `HTTP_PROXY`/`HTTPS_PROXY`, which the
+underlying HTTP client honours - and only
 to perform the actions you (or your AI assistant) explicitly request: listing
 and reading resources, and - only when you call a mutating tool - creating,
 updating, deleting, or running actions on resources in your project. The server
@@ -24,6 +26,9 @@ never calls a mutating endpoint on its own.
 Your **Hetzner API token** is sent only to that endpoint, as the
 `Authorization: Bearer` header, to authenticate those requests. It is never
 sent anywhere else, never logged, and never written to disk by this software.
+If the API endpoint redirects to a different host, port, or scheme, the
+Authorization header is stripped before following, so a redirect cannot leak
+the token.
 
 Hetzner's handling of this data is governed by Hetzner's own
 [Privacy Policy](https://www.hetzner.com/legal/privacy-policy).

@@ -340,7 +340,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Delete an SSH key from the project.",
+        description = "Delete an SSH key from the project permanently.",
         annotations(
             title = "Delete SSH key",
             read_only_hint = false,
