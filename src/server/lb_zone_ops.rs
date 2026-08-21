@@ -45,6 +45,9 @@ const METRIC_TYPES: [&str; 4] = [
     "bandwidth",
 ];
 
+/// DNS max length; also the post-B28 canonical bound for a zone id/name path segment.
+const MAX_ZONE_ID_LEN: usize = 253;
+
 fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
     if allowed.contains(&action) {
         Ok(())
@@ -60,11 +63,19 @@ fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
     }
 }
 
-/// Mirrors misc.rs's `validate_zone_id` rule (non-empty, `[A-Za-z0-9.-]`).
-/// Duplicated here: that fn is private to misc.rs and its skeleton predates
-/// this brief, so it cannot be called across modules.
+/// Mirrors misc.rs's post-B28 `validate_zone_id` rule (non-empty, at most
+/// [`MAX_ZONE_ID_LEN`] chars, not exactly ".", no ".." substring, and chars
+/// restricted to `[A-Za-z0-9.-]`). Duplicated here: that fn is private to
+/// misc.rs and its skeleton predates this brief, so it cannot be called
+/// across modules. A bare "." passes the charset check but the client's URL
+/// join collapses it, wire-confirmed to retarget `DELETE /zones/{id}` (and
+/// the zone_action path) onto the `/zones` collection endpoint - the extra
+/// clauses below close that hole.
 fn validate_zone_id(id_or_name: &str) -> Result<(), ErrorData> {
     let ok = !id_or_name.is_empty()
+        && id_or_name.len() <= MAX_ZONE_ID_LEN
+        && id_or_name != "."
+        && !id_or_name.contains("..")
         && id_or_name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
@@ -73,16 +84,23 @@ fn validate_zone_id(id_or_name: &str) -> Result<(), ErrorData> {
     } else {
         Err(ErrorData::invalid_params(
             format!(
-                "id_or_name must be non-empty and contain only [A-Za-z0-9.-], got {id_or_name:?}"
+                "id_or_name must be non-empty, at most {MAX_ZONE_ID_LEN} chars, not \".\", not \
+                 contain \"..\", and contain only [A-Za-z0-9.-], got {id_or_name:?}"
             ),
             None,
         ))
     }
 }
 
-/// RRSet `name` path segment: non-empty, `[A-Za-z0-9._@*-]`.
+/// RRSet `name` path segment: non-empty, at most [`MAX_ZONE_ID_LEN`] chars,
+/// not exactly ".", no ".." substring, `[A-Za-z0-9._@*-]`. Same hole as
+/// `validate_zone_id`: a bare "." collapses the URL, sliding `rr_type` into
+/// the `rr_name` position.
 fn validate_rrset_name(name: &str) -> Result<(), ErrorData> {
     let ok = !name.is_empty()
+        && name.len() <= MAX_ZONE_ID_LEN
+        && name != "."
+        && !name.contains("..")
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "._@*-".contains(c));
@@ -90,7 +108,10 @@ fn validate_rrset_name(name: &str) -> Result<(), ErrorData> {
         Ok(())
     } else {
         Err(ErrorData::invalid_params(
-            format!("rrset name must be non-empty and contain only [A-Za-z0-9._@*-], got {name:?}"),
+            format!(
+                "rrset name must be non-empty, at most {MAX_ZONE_ID_LEN} chars, not \".\", not \
+                 contain \"..\", and contain only [A-Za-z0-9._@*-], got {name:?}"
+            ),
             None,
         ))
     }
@@ -210,6 +231,12 @@ pub(crate) struct CreateZoneArgs {
     /// Labels to attach to the Zone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
+    /// Primary nameservers (required for mode "secondary" to be completable;
+    /// ignored for "primary"). Each entry is `{"address": ..., "port"?: ...}`
+    /// per the Hetzner spec; can also be set later via zone_action's
+    /// change_primary_nameservers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_nameservers: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -248,8 +275,8 @@ pub(crate) struct ListZoneRrsetsArgs {
     /// Page number, 1-based.
     #[schemars(range(min = 1))]
     pub page: Option<u32>,
-    /// Results per page (default 25, max 50).
-    #[schemars(range(min = 1, max = 50))]
+    /// Results per page (default 25; the spec sets no maximum).
+    #[schemars(range(min = 1))]
     pub per_page: Option<u32>,
 }
 
@@ -284,6 +311,7 @@ pub(crate) struct CreateZoneRrsetArgs {
     pub r#type: String,
     /// TTL of the RRSet, in seconds; the Zone's default TTL is used if unset.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 60))]
     pub ttl: Option<u32>,
     /// Records of the RRSet; must be non-empty.
     pub records: Vec<RrsetRecord>,
@@ -404,6 +432,12 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<GetLoadBalancerMetricsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if args.r#type.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "type must contain at least one metric type",
+                None,
+            ));
+        }
         for t in &args.r#type {
             if !METRIC_TYPES.contains(&t.as_str()) {
                 return Err(ErrorData::invalid_params(
@@ -429,7 +463,9 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Create a new DNS Zone.",
+        description = "Create a new DNS Zone. A mode \"secondary\" Zone needs \
+        primary_nameservers set here, or afterwards via zone_action's \
+        change_primary_nameservers, to be functional.",
         annotations(
             title = "Create Zone",
             read_only_hint = false,
@@ -582,6 +618,9 @@ impl HcloudServer {
         Parameters(args): Parameters<CreateZoneRrsetArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         validate_zone_id(&args.id_or_name)?;
+        if args.records.is_empty() {
+            return Err(ErrorData::invalid_params("records must not be empty", None));
+        }
         let path = format!("/zones/{}/rrsets", args.id_or_name);
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -649,9 +688,17 @@ mod tests {
     use super::*;
     use crate::server::test_support::{server_for, tool_result_json};
 
-    /// Values that must never reach a URL path: traversal, an extra
-    /// segment, a query-string char, empty, and embedded whitespace.
-    const HOSTILE_STRINGS: [&str; 5] = ["../x", "a/b", "A?", "", "TXT injection"];
+    /// Values that must never reach a URL path: traversal, an extra segment,
+    /// a query-string char, empty, embedded whitespace, a bare/embedded
+    /// "..", and a too-long value (254 > the 253 DNS-length bound).
+    fn hostile_strings() -> Vec<String> {
+        let mut v: Vec<String> = ["../x", "a/b", "A?", "", "TXT injection", ".", ".."]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        v.push("a".repeat(254));
+        v
+    }
 
     /// A dead port: if the tool under test skips validation and attempts a
     /// request, `respond()` turns the transport failure into `Ok(isError)`,
@@ -717,7 +764,10 @@ mod tests {
                 "load_balancer_type": "lb11",
                 "algorithm": {"type": "least_connections"},
                 "location": "fsn1",
+                "network_zone": "eu-central",
                 "network": 42,
+                "services": [{"protocol": "tcp", "listen_port": 80}],
+                "targets": [{"type": "server", "server": {"id": 1}}],
                 "labels": {"env": "prod"},
                 "public_interface": true
             })))
@@ -735,10 +785,10 @@ mod tests {
                 load_balancer_type: "lb11".into(),
                 algorithm: Some(serde_json::json!({"type": "least_connections"})),
                 location: Some("fsn1".into()),
-                network_zone: None,
+                network_zone: Some("eu-central".into()),
                 network: Some(42),
-                services: None,
-                targets: None,
+                services: Some(serde_json::json!([{"protocol": "tcp", "listen_port": 80}])),
+                targets: Some(serde_json::json!([{"type": "server", "server": {"id": 1}}])),
                 labels: Some(labels),
                 public_interface: Some(true),
             }))
@@ -904,6 +954,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_load_balancer_metrics_rejects_an_empty_type_list() {
+        let err = dead_server()
+            .get_load_balancer_metrics(Parameters(GetLoadBalancerMetricsArgs {
+                id: 9,
+                r#type: vec![],
+                start: "2024-01-01T00:00:00Z".into(),
+                end: "2024-01-02T00:00:00Z".into(),
+                step: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
     async fn create_zone_sends_exactly_the_required_fields_when_optionals_are_unset() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
@@ -926,6 +991,7 @@ mod tests {
                 ttl: None,
                 zonefile: None,
                 labels: None,
+                primary_nameservers: None,
             }))
             .await
             .unwrap();
@@ -947,7 +1013,8 @@ mod tests {
                 "mode": "secondary",
                 "ttl": 10800,
                 "zonefile": "$ORIGIN example.com.",
-                "labels": {"env": "prod"}
+                "labels": {"env": "prod"},
+                "primary_nameservers": [{"address": "198.51.100.1"}]
             })))
             .respond_with(
                 ResponseTemplate::new(201).set_body_json(serde_json::json!({"zone": {"id": "2"}})),
@@ -963,6 +1030,7 @@ mod tests {
                 ttl: Some(10800),
                 zonefile: Some("$ORIGIN example.com.".into()),
                 labels: Some(labels),
+                primary_nameservers: Some(vec![serde_json::json!({"address": "198.51.100.1"})]),
             }))
             .await
             .unwrap();
@@ -1066,6 +1134,8 @@ mod tests {
             .and(query_param("name", "www"))
             .and(query_param("type", "A"))
             .and(query_param("type", "AAAA"))
+            .and(query_param("label_selector", "env=prod"))
+            .and(query_param("sort", "name:asc"))
             .and(query_param("page", "2"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"rrsets": []})),
@@ -1079,8 +1149,8 @@ mod tests {
                 id_or_name: "example.com".into(),
                 name: Some("www".into()),
                 r#type: Some(vec!["A".into(), "AAAA".into()]),
-                label_selector: None,
-                sort: None,
+                label_selector: Some("env=prod".into()),
+                sort: Some(vec!["name:asc".into()]),
                 page: Some(2),
                 per_page: None,
             }))
@@ -1182,6 +1252,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tool_result_json(&res), serde_json::json!({"rrset": {}}));
+    }
+
+    #[tokio::test]
+    async fn create_zone_rrset_rejects_empty_records() {
+        let err = dead_server()
+            .create_zone_rrset(Parameters(CreateZoneRrsetArgs {
+                id_or_name: "example.com".into(),
+                name: "www".into(),
+                r#type: "A".into(),
+                ttl: None,
+                records: vec![],
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -1296,10 +1382,10 @@ mod tests {
     #[tokio::test]
     async fn zone_id_rejects_every_hostile_value() {
         let server = dead_server();
-        for bad in HOSTILE_STRINGS {
+        for bad in hostile_strings() {
             let err = server
                 .delete_zone(Parameters(ZoneIdArgs {
-                    id_or_name: bad.to_string(),
+                    id_or_name: bad.clone(),
                 }))
                 .await
                 .unwrap_err();
@@ -1353,11 +1439,11 @@ mod tests {
     #[tokio::test]
     async fn get_zone_rrset_rejects_every_hostile_name_and_type_value() {
         let server = dead_server();
-        for bad in HOSTILE_STRINGS {
+        for bad in hostile_strings() {
             let err = server
                 .get_zone_rrset(Parameters(ZoneRrsetIdArgs {
                     id_or_name: "example.com".into(),
-                    rr_name: bad.to_string(),
+                    rr_name: bad.clone(),
                     rr_type: "A".into(),
                 }))
                 .await
@@ -1368,7 +1454,7 @@ mod tests {
                 .get_zone_rrset(Parameters(ZoneRrsetIdArgs {
                     id_or_name: "example.com".into(),
                     rr_name: "www".into(),
-                    rr_type: bad.to_string(),
+                    rr_type: bad.clone(),
                 }))
                 .await
                 .unwrap_err();
@@ -1416,6 +1502,76 @@ mod tests {
                 annotations.destructive_hint,
                 Some(destructive),
                 "{name} must be destructive_hint = {destructive}"
+            );
+        }
+    }
+
+    /// Pins every allowlist/enum literally, not just "one bad value gets
+    /// rejected" - a garbled or truncated entry elsewhere in the array
+    /// would otherwise pass the other tests unnoticed.
+    #[test]
+    fn action_and_metric_allowlists_match_the_spec_exactly() {
+        assert_eq!(
+            LB_ACTIONS,
+            [
+                "add_service",
+                "add_target",
+                "attach_to_network",
+                "change_algorithm",
+                "change_dns_ptr",
+                "change_protection",
+                "change_type",
+                "delete_service",
+                "detach_from_network",
+                "disable_public_interface",
+                "enable_public_interface",
+                "remove_target",
+                "update_service",
+            ]
+        );
+        assert_eq!(
+            ZONE_ACTIONS,
+            [
+                "change_primary_nameservers",
+                "change_protection",
+                "change_ttl",
+                "import_zonefile",
+            ]
+        );
+        assert_eq!(
+            METRIC_TYPES,
+            [
+                "open_connections",
+                "connections_per_second",
+                "requests_per_second",
+                "bandwidth",
+            ]
+        );
+    }
+
+    /// The BILLABLE warning and the full 13-action list must actually be in
+    /// the wire-visible tool description, not just in a code comment.
+    #[test]
+    fn create_load_balancer_and_load_balancer_action_descriptions_are_complete() {
+        let router = super::HcloudServer::lb_zone_ops_router();
+        let create_desc = router
+            .get("create_load_balancer")
+            .unwrap()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(create_desc.contains("BILLABLE"), "got: {create_desc}");
+
+        let action_desc = router
+            .get("load_balancer_action")
+            .unwrap()
+            .description
+            .clone()
+            .unwrap_or_default();
+        for action in LB_ACTIONS {
+            assert!(
+                action_desc.contains(action),
+                "load_balancer_action description missing {action:?}: {action_desc}"
             );
         }
     }
