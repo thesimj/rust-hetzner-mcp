@@ -284,7 +284,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List available images, optionally filtered by type.",
+        description = "List images, optionally filtered by type, sort, status, bound_to, \
+        include_deprecated, architecture, name, or label selector.",
         annotations(
             title = "List images",
             read_only_hint = true,
@@ -370,7 +371,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List SSH keys uploaded to the project.",
+        description = "List SSH keys, optionally filtered by sort, name, fingerprint, or label \
+        selector.",
         annotations(
             title = "List SSH keys",
             read_only_hint = true,

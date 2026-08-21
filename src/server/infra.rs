@@ -141,7 +141,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List block storage volumes.",
+        description = "List block storage volumes, optionally filtered by name, label \
+        selector, sort, or status.",
         annotations(
             title = "List volumes",
             read_only_hint = true,
@@ -182,7 +183,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List private networks.",
+        description = "List private networks, optionally filtered by name, label selector, \
+        or sort.",
         annotations(
             title = "List networks",
             read_only_hint = true,
@@ -219,7 +221,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List firewalls.",
+        description = "List firewalls, optionally filtered by name, label selector, or sort.",
         annotations(
             title = "List firewalls",
             read_only_hint = true,

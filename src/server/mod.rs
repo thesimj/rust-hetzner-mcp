@@ -799,19 +799,20 @@ mod tests {
             "manifest tool count has drifted from the router"
         );
 
-        let mut router_by_name = std::collections::BTreeMap::new();
-        for t in &router_tools {
-            let props = t.input_schema["properties"].as_object().unwrap();
-            assert!(
-                !props.contains_key("project"),
-                "{}: single-project manifest generation must not carry a project property",
-                t.name
-            );
-            router_by_name.insert(
-                t.name.as_ref(),
-                t.description.as_deref().unwrap_or_default(),
-            );
-        }
+        // D5 item 3: no "no project property leaked" assertion here - the
+        // generator's manifest entries are {name, description} only (see
+        // `toolsFromLiveBinary`), so there is no schema to inspect in the
+        // first place; the description-drift check below is what protects
+        // the committed file.
+        let router_by_name: std::collections::BTreeMap<_, _> = router_tools
+            .iter()
+            .map(|t| {
+                (
+                    t.name.as_ref(),
+                    t.description.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect();
 
         for entry in manifest_tools {
             let name = entry["name"].as_str().expect("tool name");

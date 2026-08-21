@@ -261,7 +261,7 @@
     },
     {
       "name": "list_firewalls",
-      "description": "List firewalls."
+      "description": "List firewalls, optionally filtered by name, label selector, or sort."
     },
     {
       "name": "list_floating_ips",
@@ -269,7 +269,7 @@
     },
     {
       "name": "list_images",
-      "description": "List available images, optionally filtered by type."
+      "description": "List images, optionally filtered by type, sort, status, bound_to, include_deprecated, architecture, name, or label selector."
     },
     {
       "name": "list_isos",
@@ -289,7 +289,7 @@
     },
     {
       "name": "list_networks",
-      "description": "List private networks."
+      "description": "List private networks, optionally filtered by name, label selector, or sort."
     },
     {
       "name": "list_placement_groups",
@@ -313,11 +313,11 @@
     },
     {
       "name": "list_ssh_keys",
-      "description": "List SSH keys uploaded to the project."
+      "description": "List SSH keys, optionally filtered by sort, name, fingerprint, or label selector."
     },
     {
       "name": "list_volumes",
-      "description": "List block storage volumes."
+      "description": "List block storage volumes, optionally filtered by name, label selector, sort, or status."
     },
     {
       "name": "list_zone_rrsets",
