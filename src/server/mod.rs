@@ -192,7 +192,10 @@ fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&s
             .expect("tool input schema \"properties\" must be a JSON object")
             .insert(
                 "project".to_string(),
-                serde_json::json!({"type": "string", "description": "Target project name."}),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Which configured Hetzner project to act on; call list_projects if unsure."
+                }),
             );
         if required {
             schema
@@ -401,10 +404,10 @@ impl ServerHandler for HcloudServer {
         );
         if self.projects.len() > 1 {
             let pin_note = if self.projects.pin.is_some() {
-                " With a pin configured, read-only tools may omit `project`; \
-                 mutating tools always require it."
+                " With a default project configured (HCLOUD_PROJECT), read-only \
+                 tools may omit `project`; mutating tools always require it."
             } else {
-                " No pin is configured, so every tool requires `project`."
+                " No default project is configured, so every tool requires `project`."
             };
             instructions.push_str(&format!(
                 " Several projects are configured; pass `project` to select one.\
@@ -772,10 +775,12 @@ mod multi_project_tests {
     use super::test_support::{project_token, server_for, server_for_projects};
     use super::*;
 
-    /// Pre-feature baseline (measured at HEAD 47e590d, before this change):
     /// `serde_json::to_string(&server.tool_router.list_all())` for the
-    /// original 92 tools was exactly this many bytes. §8/T1.
-    const BASELINE_92_TOOLS_LEN: usize = 66_748;
+    /// original 92 tools is exactly this many bytes, re-measured after the
+    /// N1 panel-fix prose changes (F1/F3/F4/F5/F9/F10). Per decision R3, this
+    /// pin proves single-vs-multi parity (with T6c) for the *current* prose,
+    /// not byte-identity to any earlier release's wording.
+    const BASELINE_92_TOOLS_LEN: usize = 67_901;
 
     fn tools_except_list_projects(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
         tools

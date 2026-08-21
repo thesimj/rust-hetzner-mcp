@@ -275,10 +275,13 @@ pub(crate) struct CreateZoneRrsetArgs {
     #[serde(skip_serializing)]
     pub id_or_name: String,
     /// Name of the RRSet, e.g. "www" (use "@" for the zone apex).
-    pub name: String,
+    #[serde(rename = "name")]
+    #[schemars(rename = "rr_name")]
+    pub rr_name: String,
     /// Type of the RRSet, e.g. "A".
     #[serde(rename = "type")]
-    pub r#type: String,
+    #[schemars(rename = "rr_type")]
+    pub rr_type: String,
     /// TTL of the RRSet, in seconds; the Zone's default TTL is used if unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 60))]
@@ -342,7 +345,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a Load Balancer's name and/or labels.",
+        description = "Update a Load Balancer's name and/or labels. Labels replace the \
+        full existing set, not a merge.",
         annotations(
             title = "Update Load Balancer",
             read_only_hint = false,
@@ -469,7 +473,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a Zone's labels.",
+        description = "Update a Zone's labels. Labels replace the full existing set, \
+        not a merge.",
         annotations(
             title = "Update Zone",
             read_only_hint = false,
@@ -533,9 +538,10 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Export a Zone's zonefile in BIND format (returned as {\"zonefile\": ...}).",
+        description = "Export a Zone's zonefile in BIND format (returned as {\"zonefile\": ...}). \
+        The inverse is zone_action's import_zonefile.",
         annotations(
-            title = "Get zone zonefile",
+            title = "Get Zone zonefile",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -636,7 +642,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update an RRSet's labels.",
+        description = "Update an RRSet's labels. Labels replace the full existing set, \
+        not a merge.",
         annotations(
             title = "Update Zone RRSet",
             read_only_hint = false,
@@ -1270,8 +1277,8 @@ mod tests {
         let res = server
             .create_zone_rrset(Parameters(CreateZoneRrsetArgs {
                 id_or_name: "example.com".into(),
-                name: "www".into(),
-                r#type: "A".into(),
+                rr_name: "www".into(),
+                rr_type: "A".into(),
                 ttl: None,
                 records: vec![RrsetRecord {
                     value: "198.51.100.1".into(),
@@ -1308,8 +1315,8 @@ mod tests {
         let res = server
             .create_zone_rrset(Parameters(CreateZoneRrsetArgs {
                 id_or_name: "example.com".into(),
-                name: "www".into(),
-                r#type: "A".into(),
+                rr_name: "www".into(),
+                rr_type: "A".into(),
                 ttl: Some(3600),
                 records: vec![RrsetRecord {
                     value: "198.51.100.1".into(),
@@ -1327,8 +1334,8 @@ mod tests {
         let err = dead_server()
             .create_zone_rrset(Parameters(CreateZoneRrsetArgs {
                 id_or_name: "example.com".into(),
-                name: "www".into(),
-                r#type: "A".into(),
+                rr_name: "www".into(),
+                rr_type: "A".into(),
                 ttl: None,
                 records: vec![],
                 labels: None,
@@ -1426,8 +1433,8 @@ mod tests {
         })));
         assert_invalid_params!(server.create_zone_rrset(Parameters(CreateZoneRrsetArgs {
             id_or_name: bad.clone(),
-            name: "www".into(),
-            r#type: "A".into(),
+            rr_name: "www".into(),
+            rr_type: "A".into(),
             ttl: None,
             records: vec![RrsetRecord {
                 value: "198.51.100.1".into(),
@@ -1780,5 +1787,22 @@ mod tests {
                 "load_balancer_action description missing {action:?}: {action_desc}"
             );
         }
+    }
+
+    /// F8: `#[serde(rename)]` retargets the wire body (proven above by the
+    /// `body_json` assertions) but schemars still emits the Rust field ident
+    /// for the schema unless told otherwise - confirmed empirically here
+    /// rather than assumed, per the brief's instruction to verify this.
+    #[test]
+    fn create_zone_rrset_schema_uses_rr_name_and_rr_type_not_name_and_type() {
+        let router = super::HcloudServer::lb_zone_ops_router();
+        let tool = router.get("create_zone_rrset").unwrap();
+        let props = tool.input_schema["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(props.contains_key("rr_name"), "got: {props:?}");
+        assert!(props.contains_key("rr_type"), "got: {props:?}");
+        assert!(!props.contains_key("name"), "got: {props:?}");
+        assert!(!props.contains_key("type"), "got: {props:?}");
     }
 }

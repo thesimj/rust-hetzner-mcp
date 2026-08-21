@@ -208,7 +208,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a network's name, labels, or vSwitch route exposure.",
+        description = "Update a network's name, labels, or vSwitch route exposure. Labels \
+        replace the full existing set, not a merge.",
         annotations(
             title = "Update network",
             read_only_hint = false,
@@ -299,7 +300,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a firewall's name or labels.",
+        description = "Update a firewall's name or labels. Labels replace the full \
+        existing set, not a merge.",
         annotations(
             title = "Update firewall",
             read_only_hint = false,
@@ -372,7 +374,7 @@ impl HcloudServer {
     #[tool(
         description = "Create a Floating IP. This creates a BILLABLE resource.",
         annotations(
-            title = "Create floating IP",
+            title = "Create Floating IP",
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -388,9 +390,10 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a Floating IP's description, labels, or name.",
+        description = "Update a Floating IP's description, labels, or name. Labels \
+        replace the full existing set, not a merge.",
         annotations(
-            title = "Update floating IP",
+            title = "Update Floating IP",
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -410,7 +413,7 @@ impl HcloudServer {
     #[tool(
         description = "Delete a Floating IP permanently.",
         annotations(
-            title = "Delete floating IP",
+            title = "Delete Floating IP",
             read_only_hint = false,
             destructive_hint = true,
             open_world_hint = true
@@ -460,7 +463,7 @@ impl HcloudServer {
     #[tool(
         description = "Create a Primary IP. This creates a BILLABLE resource.",
         annotations(
-            title = "Create primary IP",
+            title = "Create Primary IP",
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -476,9 +479,10 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a Primary IP's name, auto_delete flag, or labels.",
+        description = "Update a Primary IP's name, auto_delete flag, or labels. Labels \
+        replace the full existing set, not a merge.",
         annotations(
-            title = "Update primary IP",
+            title = "Update Primary IP",
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -498,7 +502,7 @@ impl HcloudServer {
     #[tool(
         description = "Delete a Primary IP permanently.",
         annotations(
-            title = "Delete primary IP",
+            title = "Delete Primary IP",
             read_only_hint = false,
             destructive_hint = true,
             open_world_hint = true

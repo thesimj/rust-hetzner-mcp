@@ -85,7 +85,7 @@ impl HcloudServer {
     #[tool(
         description = "List Floating IPs, optionally filtered by name, label selector, or sort order.",
         annotations(
-            title = "List floating IPs",
+            title = "List Floating IPs",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -102,7 +102,7 @@ impl HcloudServer {
     #[tool(
         description = "Get a single Floating IP by ID.",
         annotations(
-            title = "Get floating IP",
+            title = "Get Floating IP",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -122,7 +122,7 @@ impl HcloudServer {
     #[tool(
         description = "List Primary IPs, optionally filtered by name, label selector, IP, or sort order.",
         annotations(
-            title = "List primary IPs",
+            title = "List Primary IPs",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -145,7 +145,7 @@ impl HcloudServer {
     #[tool(
         description = "Get a single Primary IP by ID.",
         annotations(
-            title = "Get primary IP",
+            title = "Get Primary IP",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -165,7 +165,7 @@ impl HcloudServer {
     #[tool(
         description = "List Load Balancers, optionally filtered by name, label selector, or sort order.",
         annotations(
-            title = "List load balancers",
+            title = "List Load Balancers",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -182,7 +182,7 @@ impl HcloudServer {
     #[tool(
         description = "Get a single Load Balancer by ID.",
         annotations(
-            title = "Get load balancer",
+            title = "Get Load Balancer",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -202,7 +202,7 @@ impl HcloudServer {
     #[tool(
         description = "List Load Balancer types, optionally filtered by name.",
         annotations(
-            title = "List load balancer types",
+            title = "List Load Balancer types",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -220,7 +220,7 @@ impl HcloudServer {
     #[tool(
         description = "Get a single Load Balancer type by ID.",
         annotations(
-            title = "Get load balancer type",
+            title = "Get Load Balancer type",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true

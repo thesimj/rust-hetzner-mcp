@@ -141,7 +141,8 @@ pub(crate) struct CreateCertificateArgs {
 #[tool_router(router = res_ops_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
-        description = "Update an image's description, type, or labels.",
+        description = "Update an image's description, type, or labels. Labels replace \
+        the full existing set, not a merge.",
         annotations(
             title = "Update image",
             read_only_hint = false,
@@ -177,11 +178,11 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Run an image action (change_protection).",
+        description = "Run an image action: change_protection, which toggles delete protection.",
         annotations(
             title = "Run image action",
             read_only_hint = false,
-            destructive_hint = true,
+            destructive_hint = false,
             open_world_hint = true
         )
     )]
@@ -201,7 +202,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update an SSH key's name or labels.",
+        description = "Update an SSH key's name or labels. Labels replace the full \
+        existing set, not a merge.",
         annotations(
             title = "Update SSH key",
             read_only_hint = false,
@@ -239,7 +241,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a volume's name or labels.",
+        description = "Update a volume's name or labels. Labels replace the full \
+        existing set, not a merge.",
         annotations(
             title = "Update volume",
             read_only_hint = false,
@@ -319,7 +322,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a placement group's name or labels.",
+        description = "Update a placement group's name or labels. Labels replace the \
+        full existing set, not a merge.",
         annotations(
             title = "Update placement group",
             read_only_hint = false,
@@ -377,7 +381,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Update a certificate's name or labels.",
+        description = "Update a certificate's name or labels. Labels replace the full \
+        existing set, not a merge.",
         annotations(
             title = "Update certificate",
             read_only_hint = false,
@@ -413,8 +418,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Run a certificate action (retry). Retries issuance of a managed \
-        certificate that failed to be issued.",
+        description = "Run a certificate action: retry, which retries issuance for a \
+        failed managed certificate.",
         annotations(
             title = "Run certificate action",
             read_only_hint = false,
@@ -915,7 +920,7 @@ mod tests {
         let expected: [(&str, bool, bool); 15] = [
             ("update_image", false, false),
             ("delete_image", false, true),
-            ("image_action", false, true),
+            ("image_action", false, false),
             ("update_ssh_key", false, false),
             ("create_volume", false, false),
             ("update_volume", false, false),

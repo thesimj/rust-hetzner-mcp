@@ -126,7 +126,8 @@ it is never logged or written to disk. Do not commit tokens; this repo's
 ```
 
 With more than one project configured, every pre-existing tool gains a
-`project` argument ("Target project name."); a successful result is wrapped
+`project` argument ("Which configured Hetzner project to act on; call
+list_projects if unsure."); a successful result is wrapped
 as `{"project": ..., "result": ...}`, while an error result instead gets a
 prepended `project: <name>` text line. `HCLOUD_PROJECT` pins a default:
 read-only tools may then omit `project`, but mutating tools always require it
@@ -170,7 +171,7 @@ object; the allowed actions are noted after each.
 - `get_image` - get an image by ID
 - `update_image` - update an image's description, type, or labels
 - `delete_image` - delete an image (snapshot or backup) permanently. **Destructive**
-- `image_action` - run an image action. **Destructive.** Actions: change_protection
+- `image_action` - run an image action. Actions: change_protection (toggles delete protection)
 
 **Server types**
 - `list_server_types` - list available server types (plans)
@@ -246,7 +247,7 @@ object; the allowed actions are noted after each.
 - `create_certificate` - upload a certificate, or request a managed Let's Encrypt certificate
 - `update_certificate` - update a certificate's name or labels
 - `delete_certificate` - delete a certificate permanently. **Destructive**
-- `certificate_action` - run a certificate action. Actions: retry (retries issuance of a failed managed certificate)
+- `certificate_action` - run a certificate action. Actions: retry (retries issuance for a failed managed certificate)
 
 **ISOs**
 - `list_isos` - list ISO images available to attach to servers, filterable by name/architecture
@@ -266,7 +267,7 @@ object; the allowed actions are noted after each.
 - `update_zone` - update a zone's labels
 - `delete_zone` - delete a zone and all its RRSets permanently. **Destructive**
 - `zone_action` - run a zone action. **Destructive.** Actions: change_primary_nameservers, change_protection, change_ttl, import_zonefile
-- `get_zone_zonefile` - export a zone's zonefile in BIND format
+- `get_zone_zonefile` - export a zone's zonefile in BIND format (the inverse is `zone_action`'s `import_zonefile`)
 - `list_zone_rrsets` - list a zone's RRSets, filterable by name, type, or label selector
 - `get_zone_rrset` - get a single RRSet by zone and name/type
 - `create_zone_rrset` - create a new RRSet in a zone
@@ -275,7 +276,7 @@ object; the allowed actions are noted after each.
 - `zone_rrset_action` - run an RRSet action. **Destructive.** Actions: change_protection, change_ttl, set_records, add_records, remove_records, update_records
 
 **Global actions & pricing**
-- `list_actions` - get one or more actions by ID (the API removed listing all actions; at least one ID is required)
+- `get_actions` - fetch one or more actions by ID (the API removed listing all actions; at least one ID is required)
 - `get_action` - get a single action by ID; poll until status is success or error
 - `get_pricing` - get current Hetzner Cloud pricing for all resource types
 
@@ -293,7 +294,7 @@ Primary IPs, Load Balancers (+ types, metrics, the 13-action
 (+ RRSets), global actions polling, and pricing.
 
 The per-resource action-listing endpoints (`GET /<resource>/actions` and
-friends) are not exposed as separate tools - poll actions with `list_actions`
+friends) are not exposed as separate tools - poll actions with `get_actions`
 / `get_action` instead, which return the same action objects.
 
 Storage Boxes are excluded: they live on a separate API

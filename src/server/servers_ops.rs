@@ -82,7 +82,7 @@ pub(crate) struct ServerActionArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ListActionsArgs {
+pub(crate) struct GetActionsArgs {
     /// Action IDs to fetch. The API removed listing all actions (2025-01-30);
     /// an empty list is rejected, not sent as a bare GET /actions.
     pub id: Vec<u64>,
@@ -160,11 +160,16 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Run a server action, e.g. rebuild, attach_iso, \
-        create_image, change_type, reset_password. params carries the \
-        per-action request body (e.g. {\"image\": \"ubuntu-24.04\"} for \
-        rebuild); omit it for actions with no body. poweron, poweroff, \
-        reboot, and shutdown are also available via power_server.",
+        description = "Run a server action: add_to_placement_group, attach_iso, \
+        attach_to_network, change_alias_ips, change_dns_ptr, change_protection, \
+        change_type, create_image, detach_from_network, detach_iso, \
+        disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, \
+        poweron, reboot, rebuild, remove_from_placement_group, request_console, \
+        reset, reset_password, shutdown. rebuild replaces the disk and destroys \
+        its data; create_image creates a BILLABLE snapshot; change_type requires \
+        the server powered off; for poweron/poweroff/reboot/shutdown use \
+        power_server. params carries the per-action request body (e.g. \
+        {\"image\": \"ubuntu-24.04\"} for rebuild); omit it for actions with no body.",
         annotations(
             title = "Run server action",
             read_only_hint = false,
@@ -198,18 +203,18 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Get one or more actions by ID. The API removed \
+        description = "Fetch one or more actions by ID. The API removed \
         listing all actions, so at least one id is required.",
         annotations(
-            title = "List actions",
+            title = "Get actions",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
         )
     )]
-    pub(crate) async fn list_actions(
+    pub(crate) async fn get_actions(
         &self,
-        Parameters(args): Parameters<ListActionsArgs>,
+        Parameters(args): Parameters<GetActionsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         if args.id.is_empty() {
             return Err(ErrorData::invalid_params(
@@ -477,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_actions_sends_repeated_id_query_params() {
+    async fn get_actions_sends_repeated_id_query_params() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/actions"))
@@ -492,7 +497,7 @@ mod tests {
 
         let server = server_for(mock.uri());
         let res = server
-            .list_actions(Parameters(ListActionsArgs { id: vec![1, 2] }))
+            .get_actions(Parameters(GetActionsArgs { id: vec![1, 2] }))
             .await
             .unwrap();
         assert_eq!(
@@ -502,10 +507,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_actions_rejects_an_empty_id_list_with_invalid_params() {
+    async fn get_actions_rejects_an_empty_id_list_with_invalid_params() {
         let server = server_for("http://127.0.0.1:9".to_string());
         let err = server
-            .list_actions(Parameters(ListActionsArgs { id: vec![] }))
+            .get_actions(Parameters(GetActionsArgs { id: vec![] }))
             .await
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -604,7 +609,7 @@ mod tests {
             ("update_server", false, false),
             ("get_server_metrics", true, false),
             ("server_action", false, true),
-            ("list_actions", true, false),
+            ("get_actions", true, false),
             ("get_action", true, false),
             ("get_pricing", true, false),
         ];

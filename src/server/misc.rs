@@ -172,7 +172,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Get a single ISO image by ID.",
+        description = "Get a single ISO by ID.",
         annotations(
             title = "Get ISO",
             read_only_hint = true,
@@ -227,7 +227,7 @@ impl HcloudServer {
     #[tool(
         description = "List DNS zones, optionally filtered by name, label selector, sort, or mode.",
         annotations(
-            title = "List zones",
+            title = "List Zones",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true
@@ -244,7 +244,7 @@ impl HcloudServer {
     #[tool(
         description = "Get a single DNS zone by ID or name.",
         annotations(
-            title = "Get zone",
+            title = "Get Zone",
             read_only_hint = true,
             destructive_hint = false,
             open_world_hint = true

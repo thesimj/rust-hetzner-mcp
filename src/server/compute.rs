@@ -189,7 +189,8 @@ impl HcloudServer {
 
     #[tool(
         description = "Run a power action (poweron, poweroff, reboot, shutdown) on a server. \
-        poweroff, reboot, and shutdown all interrupt workloads running on the server.",
+        poweroff, reboot, and shutdown all interrupt workloads running on the server. For \
+        rebuild, change_type, create_image, and other actions, use server_action.",
         annotations(
             title = "Power server",
             read_only_hint = false,
