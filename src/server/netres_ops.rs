@@ -12,9 +12,9 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use super::{HcloudServer, IdArgs, respond};
+use super::{HcloudServer, IdArgs, require_update_fields, respond};
 
 const NETWORK_ACTIONS: [&str; 6] = [
     "add_route",
@@ -39,8 +39,15 @@ pub(crate) struct ActionArgs {
     /// Action name; see this tool's description for the allowed values.
     pub action: String,
     /// Action-specific request body, forwarded to the API as-is. Omit for
-    /// actions that take no parameters (e.g. unassign).
-    pub params: Option<Value>,
+    /// actions that take no parameters (e.g. unassign). A JSON object (not
+    /// `serde_json::Value`), so a bare string or number can never become the
+    /// POST body.
+    pub params: Option<Map<String, Value>>,
+}
+
+/// Turn an action's optional params object into a POST body - `{}` when unset.
+fn action_body(params: Option<Map<String, Value>>) -> Value {
+    params.map_or_else(|| serde_json::json!({}), Value::Object)
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -223,6 +230,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/networks/{id}"), body).await)
     }
 
@@ -272,7 +280,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/networks/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -313,6 +321,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/firewalls/{id}"), body).await)
     }
 
@@ -361,7 +370,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/firewalls/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -401,6 +410,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/floating_ips/{id}"), body).await)
     }
 
@@ -448,7 +458,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/floating_ips/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -488,6 +498,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/primary_ips/{id}"), body).await)
     }
 
@@ -535,7 +546,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/primary_ips/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -551,6 +562,12 @@ mod tests {
 
     use super::*;
     use crate::server::test_support::{server_for, tool_result_json};
+
+    /// ActionArgs.params is object-typed (N2); tests build it from a JSON
+    /// object literal for readability.
+    fn map_of(v: serde_json::Value) -> Map<String, Value> {
+        v.as_object().expect("object literal").clone()
+    }
 
     #[tokio::test]
     async fn create_network_sends_exactly_the_required_fields_when_optionals_are_unset() {
@@ -1057,7 +1074,7 @@ mod tests {
                 .network_action(Parameters(ActionArgs {
                     id: 9,
                     action: "change_ip_range".into(),
-                    params: Some(serde_json::json!({"ip_range": "10.0.0.0/24"})),
+                    params: Some(map_of(serde_json::json!({"ip_range": "10.0.0.0/24"}))),
                 }))
                 .await
                 .unwrap(),
@@ -1065,7 +1082,7 @@ mod tests {
                 .firewall_action(Parameters(ActionArgs {
                     id: 4,
                     action: "set_rules".into(),
-                    params: Some(serde_json::json!({"rules": []})),
+                    params: Some(map_of(serde_json::json!({"rules": []}))),
                 }))
                 .await
                 .unwrap(),
@@ -1073,7 +1090,7 @@ mod tests {
                 .floating_ip_action(Parameters(ActionArgs {
                     id: 8,
                     action: "assign".into(),
-                    params: Some(serde_json::json!({"server": 42})),
+                    params: Some(map_of(serde_json::json!({"server": 42}))),
                 }))
                 .await
                 .unwrap(),
@@ -1081,7 +1098,9 @@ mod tests {
                 .primary_ip_action(Parameters(ActionArgs {
                     id: 11,
                     action: "assign".into(),
-                    params: Some(serde_json::json!({"assignee_type": "server", "assignee_id": 42})),
+                    params: Some(map_of(
+                        serde_json::json!({"assignee_type": "server", "assignee_id": 42}),
+                    )),
                 }))
                 .await
                 .unwrap(),
@@ -1191,9 +1210,22 @@ mod tests {
         assert_rejects_bad_action!(server, primary_ip_action);
     }
 
+    /// N2 schema-level proof: `params` is object-typed, so a bare scalar
+    /// fails to deserialize instead of becoming the HTTP body.
+    #[test]
+    fn action_params_rejects_a_scalar_at_the_schema_level() {
+        assert!(
+            serde_json::from_value::<ActionArgs>(serde_json::json!({
+                "id": 1, "action": "assign", "params": "nuke"
+            }))
+            .is_err()
+        );
+    }
+
     /// Mirrors compute's/infra's router annotation assertion: (read_only,
     /// destructive) per tool, so flipping a hint on any of the 16 tools
-    /// breaks the suite.
+    /// breaks the suite. Also asserts open_world_hint and distinct,
+    /// non-empty titles (N6: parity with net.rs/misc.rs/res_ops.rs).
     #[test]
     fn netres_ops_router_registers_all_16_tools_with_expected_annotations() {
         let router = super::HcloudServer::netres_ops_router();
@@ -1216,6 +1248,7 @@ mod tests {
             ("primary_ip_action", false, true),
         ];
         assert_eq!(router.list_all().len(), 16);
+        let mut titles = std::collections::HashSet::new();
         for (name, read_only, destructive) in expected {
             let tool = router
                 .get(name)
@@ -1234,6 +1267,21 @@ mod tests {
                 Some(destructive),
                 "{name} must be destructive_hint = {destructive}"
             );
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(true),
+                "{name} must be open_world_hint = true"
+            );
+            let title = annotations
+                .title
+                .clone()
+                .unwrap_or_else(|| panic!("{name} has no title"));
+            assert!(!title.is_empty(), "{name} title must not be empty");
+            assert!(
+                titles.insert(title.clone()),
+                "title {title:?} reused by more than one tool"
+            );
         }
+        assert_eq!(titles.len(), 16, "every tool must have a distinct title");
     }
 }

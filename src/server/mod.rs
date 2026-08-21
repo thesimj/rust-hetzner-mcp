@@ -127,12 +127,35 @@ pub(crate) fn push_param(
     }
 }
 
+/// Reject an update body with no fields set. `skip_serializing_if` drops every
+/// unset field, so an all-unset call would otherwise serialize to `{}` and
+/// send a mutating PUT that changes nothing but still hits the API - every
+/// update_* tool must call this between `to_value` and `client.put`.
+pub(crate) fn require_update_fields(body: &Value) -> Result<(), ErrorData> {
+    if body.as_object().is_none_or(serde_json::Map::is_empty) {
+        Err(ErrorData::invalid_params(
+            "set at least one field to update",
+            None,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Numeric ID of a single resource, shared by the by-id tools across seams.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct IdArgs {
     /// Numeric ID of the resource, from the matching list_* tool's response
     /// (or, for actions, a mutation response's `action.id`).
     pub id: u64,
+}
+
+/// ID or name of a zone - the only string this crate interpolates into a URL path.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct ZoneIdArgs {
+    /// Zone ID or name, from list_zones. ASCII letters, digits, '.', and '-'
+    /// only; not "." or containing "..".
+    pub id_or_name: String,
 }
 
 /// Maximum length of a DNS zone name (RFC 1035).
@@ -213,8 +236,8 @@ mod tests {
             + HcloudServer::lb_zone_ops_router().list_all().len();
         assert_eq!(server.tool_router.list_all().len(), parts);
         // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops
-        // + 15 res_ops + 16 netres_ops + 14 lb_zone_ops.
-        assert_eq!(server.tool_router.list_all().len(), 90);
+        // + 15 res_ops + 16 netres_ops + 15 lb_zone_ops.
+        assert_eq!(server.tool_router.list_all().len(), 91);
     }
 
     #[test]
@@ -233,5 +256,109 @@ mod tests {
         let v = serde_json::to_value(&res).unwrap();
         let text = v["content"][0]["text"].as_str().expect("text content");
         assert!(text.contains("boom"), "got: {text}");
+    }
+
+    #[test]
+    fn require_update_fields_rejects_only_an_empty_object() {
+        assert!(require_update_fields(&serde_json::json!({})).is_err());
+        assert!(require_update_fields(&serde_json::json!({"name": "x"})).is_ok());
+    }
+
+    /// N1: every one of the 13 update_* tools must reject an all-unset call
+    /// with a protocol error, before any HTTP request is attempted (dead
+    /// port - a skipped guard would surface as an isError, not this Err).
+    #[tokio::test]
+    async fn every_update_tool_rejects_an_all_unset_call_without_making_a_request() {
+        use rmcp::handler::server::wrapper::Parameters;
+        use rmcp::model::ErrorCode;
+
+        use super::lb_zone_ops::{UpdateLoadBalancerArgs, UpdateZoneArgs, UpdateZoneRrsetArgs};
+        use super::netres_ops::{
+            UpdateFirewallArgs, UpdateFloatingIpArgs, UpdateNetworkArgs, UpdatePrimaryIpArgs,
+        };
+        use super::res_ops::{UpdateImageArgs, UpdateNameLabelsArgs};
+        use super::servers_ops::UpdateServerArgs;
+
+        let server = test_support::server_for("http://127.0.0.1:9".to_string());
+
+        macro_rules! assert_rejects {
+            ($call:expr) => {
+                assert_eq!($call.await.unwrap_err().code, ErrorCode::INVALID_PARAMS);
+            };
+        }
+
+        assert_rejects!(server.update_image(Parameters(UpdateImageArgs {
+            id: 1,
+            description: None,
+            r#type: None,
+            labels: None
+        })));
+        assert_rejects!(server.update_ssh_key(Parameters(UpdateNameLabelsArgs {
+            id: 1,
+            name: None,
+            labels: None
+        })));
+        assert_rejects!(server.update_volume(Parameters(UpdateNameLabelsArgs {
+            id: 1,
+            name: None,
+            labels: None
+        })));
+        assert_rejects!(
+            server.update_placement_group(Parameters(UpdateNameLabelsArgs {
+                id: 1,
+                name: None,
+                labels: None
+            }))
+        );
+        assert_rejects!(server.update_certificate(Parameters(UpdateNameLabelsArgs {
+            id: 1,
+            name: None,
+            labels: None
+        })));
+        assert_rejects!(server.update_network(Parameters(UpdateNetworkArgs {
+            id: 1,
+            name: None,
+            labels: None,
+            expose_routes_to_vswitch: None
+        })));
+        assert_rejects!(server.update_firewall(Parameters(UpdateFirewallArgs {
+            id: 1,
+            name: None,
+            labels: None
+        })));
+        assert_rejects!(server.update_floating_ip(Parameters(UpdateFloatingIpArgs {
+            id: 1,
+            description: None,
+            labels: None,
+            name: None
+        })));
+        assert_rejects!(server.update_primary_ip(Parameters(UpdatePrimaryIpArgs {
+            id: 1,
+            name: None,
+            auto_delete: None,
+            labels: None
+        })));
+        assert_rejects!(
+            server.update_load_balancer(Parameters(UpdateLoadBalancerArgs {
+                id: 1,
+                name: None,
+                labels: None
+            }))
+        );
+        assert_rejects!(server.update_zone(Parameters(UpdateZoneArgs {
+            id_or_name: "example.com".into(),
+            labels: None
+        })));
+        assert_rejects!(server.update_zone_rrset(Parameters(UpdateZoneRrsetArgs {
+            id_or_name: "example.com".into(),
+            rr_name: "www".into(),
+            rr_type: "A".into(),
+            labels: None
+        })));
+        assert_rejects!(server.update_server(Parameters(UpdateServerArgs {
+            id: 1,
+            name: None,
+            labels: None
+        })));
     }
 }

@@ -16,7 +16,9 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, IdArgs, pagination_query, push_param, respond, validate_zone_id};
+use super::{
+    HcloudServer, IdArgs, ZoneIdArgs, pagination_query, push_param, respond, validate_zone_id,
+};
 
 /// Pagination plus name/label/sort/type filters, shared by list tools whose
 /// spec entry lists all four (certificates, placement_groups).
@@ -29,8 +31,8 @@ pub(crate) struct NameLabelSortTypePageArgs {
     /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
     pub sort: Option<Vec<String>>,
     /// Resource type filter, e.g. "uploaded"/"managed" (certificates) or
-    /// "spread" (placement groups); repeatable.
-    #[serde(rename = "type")]
+    /// "spread" (placement groups); repeatable. `r#type`'s raw-identifier
+    /// prefix is already stripped by serde/schemars, so no rename is needed.
     pub r#type: Option<Vec<String>>,
     /// Page number to fetch, 1-based.
     #[schemars(range(min = 1))]
@@ -112,14 +114,6 @@ fn iso_list_query(args: IsoListArgs) -> Vec<(&'static str, String)> {
         );
     }
     q
-}
-
-/// ID or name of a zone - the only string this crate interpolates into a URL path.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ZoneIdArgs {
-    /// Zone ID or name, from list_zones. ASCII letters, digits, '.', and '-'
-    /// only; not "." or containing "..".
-    pub id_or_name: String,
 }
 
 #[tool_router(router = misc_router, vis = "pub(crate)")]

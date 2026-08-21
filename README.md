@@ -1,7 +1,7 @@
 # hetzner-mcp
 
 An MCP server for the Hetzner Cloud API, over stdio: full coverage of
-`api.hetzner.cloud/v1` across 90 tools.
+`api.hetzner.cloud/v1` across 91 tools.
 
 ## Install
 
@@ -47,7 +47,7 @@ For any other MCP client, add it to your server config:
 
 ## Tools
 
-90 tools total, across 8 routers. Every `list_*`/`get_*` tool is read-only.
+91 tools total, across 8 routers. Every `list_*`/`get_*` tool is read-only.
 `*_action` tools take an allowlisted `action` name plus an optional `params`
 object; the allowed actions are noted after each.
 
@@ -167,6 +167,7 @@ object; the allowed actions are noted after each.
 - `create_zone_rrset` - create a new RRSet in a zone
 - `update_zone_rrset` - update an RRSet's labels
 - `delete_zone_rrset` - delete an RRSet from a zone permanently. **Destructive**
+- `zone_rrset_action` - run an RRSet action. **Destructive.** Actions: change_protection, change_ttl, set_records, add_records, remove_records, update_records
 
 **Global actions & pricing**
 - `list_actions` - get one or more actions by ID (the API removed listing all actions; at least one ID is required)

@@ -14,7 +14,8 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    HcloudServer, MAX_ZONE_ID_LEN, pagination_query, push_param, respond, validate_zone_id,
+    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, pagination_query, push_param,
+    require_update_fields, respond, validate_zone_id,
 };
 
 const LB_ACTIONS: [&str; 13] = [
@@ -47,6 +48,15 @@ const METRIC_TYPES: [&str; 4] = [
     "bandwidth",
 ];
 
+const RRSET_ACTIONS: [&str; 6] = [
+    "change_protection",
+    "change_ttl",
+    "set_records",
+    "add_records",
+    "remove_records",
+    "update_records",
+];
+
 fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
     if allowed.contains(&action) {
         Ok(())
@@ -60,6 +70,11 @@ fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
             None,
         ))
     }
+}
+
+/// Turn an action's optional params object into a POST body - `{}` when unset.
+fn action_body(params: Option<serde_json::Map<String, serde_json::Value>>) -> serde_json::Value {
+    params.map_or_else(|| serde_json::json!({}), serde_json::Value::Object)
 }
 
 /// RRSet `name` path segment: non-empty, at most [`MAX_ZONE_ID_LEN`] chars,
@@ -101,18 +116,6 @@ fn validate_rrset_type(value: &str) -> Result<(), ErrorData> {
             None,
         ))
     }
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct LbIdArgs {
-    /// Numeric ID of the Load Balancer.
-    pub id: u64,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ZoneIdArgs {
-    /// ID or name of the Zone.
-    pub id_or_name: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -166,8 +169,10 @@ pub(crate) struct LoadBalancerActionArgs {
     pub id: u64,
     /// Action name; see the tool description for the allowed set.
     pub action: String,
-    /// Action-specific JSON body; omit for actions that take no parameters.
-    pub params: Option<serde_json::Value>,
+    /// Action-specific parameters object; omit for actions that take no
+    /// parameters. A JSON object (not `serde_json::Value`), so a bare string
+    /// or number can never become the POST body.
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -225,8 +230,10 @@ pub(crate) struct ZoneActionArgs {
     pub id_or_name: String,
     /// Action name; see the tool description for the allowed set.
     pub action: String,
-    /// Action-specific JSON body; omit for actions that take no parameters.
-    pub params: Option<serde_json::Value>,
+    /// Action-specific parameters object; omit for actions that take no
+    /// parameters. A JSON object (not `serde_json::Value`), so a bare string
+    /// or number can never become the POST body.
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -306,6 +313,22 @@ pub(crate) struct UpdateZoneRrsetArgs {
     pub labels: Option<BTreeMap<String, String>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ZoneRrsetActionArgs {
+    /// ID or name of the Zone the RRSet belongs to.
+    pub id_or_name: String,
+    /// Name of the RRSet to act on.
+    pub rr_name: String,
+    /// Type of the RRSet to act on.
+    pub rr_type: String,
+    /// Action name; see the tool description for the allowed set.
+    pub action: String,
+    /// Action-specific parameters object; omit for actions that take no
+    /// parameters. A JSON object (not `serde_json::Value`), so a bare string
+    /// or number can never become the POST body.
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 #[tool_router(router = lb_zone_ops_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
@@ -342,6 +365,7 @@ impl HcloudServer {
         let path = format!("/load_balancers/{}", args.id);
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&path, body).await)
     }
 
@@ -356,7 +380,7 @@ impl HcloudServer {
     )]
     pub(crate) async fn delete_load_balancer(
         &self,
-        Parameters(LbIdArgs { id }): Parameters<LbIdArgs>,
+        Parameters(IdArgs { id }): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         respond(self.client.delete(&format!("/load_balancers/{id}")).await)
     }
@@ -383,7 +407,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/load_balancers/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -469,6 +493,7 @@ impl HcloudServer {
         let path = format!("/zones/{}", args.id_or_name);
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&path, body).await)
     }
 
@@ -509,7 +534,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/zones/{}/actions/{}", args.id_or_name, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -619,6 +644,7 @@ impl HcloudServer {
         );
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&path, body).await)
     }
 
@@ -647,6 +673,38 @@ impl HcloudServer {
                 .await,
         )
     }
+
+    #[tool(
+        description = "Run an action on an RRSet: add_records, change_protection, \
+        change_ttl, remove_records, set_records, update_records. set_records and \
+        update_records REPLACE data rather than merge it.",
+        annotations(
+            title = "Zone RRSet action",
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    pub(crate) async fn zone_rrset_action(
+        &self,
+        Parameters(args): Parameters<ZoneRrsetActionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        validate_zone_id(&args.id_or_name)?;
+        validate_rrset_name(&args.rr_name)?;
+        validate_rrset_type(&args.rr_type)?;
+        check_action(&RRSET_ACTIONS, &args.action)?;
+        respond(
+            self.client
+                .post(
+                    &format!(
+                        "/zones/{}/rrsets/{}/{}/actions/{}",
+                        args.id_or_name, args.rr_name, args.rr_type, args.action
+                    ),
+                    action_body(args.params),
+                )
+                .await,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -657,6 +715,12 @@ mod tests {
 
     use super::*;
     use crate::server::test_support::{server_for, tool_result_json};
+
+    /// `*_action` `params` is object-typed (N2); tests build it from a JSON
+    /// object literal for readability.
+    fn map_of(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().expect("object literal").clone()
+    }
 
     /// Values that must never reach a URL path: traversal, an extra segment,
     /// a query-string char, empty, embedded whitespace, a bare/embedded
@@ -811,7 +875,7 @@ mod tests {
 
         let server = server_for(mock.uri());
         let res = server
-            .delete_load_balancer(Parameters(LbIdArgs { id: 7 }))
+            .delete_load_balancer(Parameters(IdArgs { id: 7 }))
             .await
             .unwrap();
         assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
@@ -834,7 +898,7 @@ mod tests {
             .load_balancer_action(Parameters(LoadBalancerActionArgs {
                 id: 7,
                 action: "change_algorithm".into(),
-                params: Some(serde_json::json!({"type": "least_connections"})),
+                params: Some(map_of(serde_json::json!({"type": "least_connections"}))),
             }))
             .await
             .unwrap();
@@ -876,6 +940,25 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// N2 schema-level proof: `params` is object-typed on both action arg
+    /// structs, so a bare scalar fails to deserialize instead of becoming
+    /// the HTTP body.
+    #[test]
+    fn action_params_reject_a_scalar_at_the_schema_level() {
+        assert!(
+            serde_json::from_value::<LoadBalancerActionArgs>(serde_json::json!({
+                "id": 1, "action": "change_algorithm", "params": "nuke"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ZoneActionArgs>(serde_json::json!({
+                "id_or_name": "example.com", "action": "change_ttl", "params": 42
+            }))
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1076,7 +1159,7 @@ mod tests {
             .zone_action(Parameters(ZoneActionArgs {
                 id_or_name: "example.com".into(),
                 action: "change_ttl".into(),
-                params: Some(serde_json::json!({"ttl": 3600})),
+                params: Some(map_of(serde_json::json!({"ttl": 3600}))),
             }))
             .await
             .unwrap();
@@ -1341,9 +1424,16 @@ mod tests {
             labels: None
         })));
         assert_invalid_params!(server.delete_zone_rrset(Parameters(ZoneRrsetIdArgs {
-            id_or_name: bad,
+            id_or_name: bad.clone(),
             rr_name: "www".into(),
             rr_type: "A".into()
+        })));
+        assert_invalid_params!(server.zone_rrset_action(Parameters(ZoneRrsetActionArgs {
+            id_or_name: bad,
+            rr_name: "www".into(),
+            rr_type: "A".into(),
+            action: "change_ttl".into(),
+            params: None
         })));
     }
 
@@ -1400,7 +1490,21 @@ mod tests {
         assert_invalid_params!(server.delete_zone_rrset(Parameters(ZoneRrsetIdArgs {
             id_or_name: "example.com".into(),
             rr_name: "www".into(),
-            rr_type: bad
+            rr_type: bad.clone()
+        })));
+        assert_invalid_params!(server.zone_rrset_action(Parameters(ZoneRrsetActionArgs {
+            id_or_name: "example.com".into(),
+            rr_name: bad.clone(),
+            rr_type: "A".into(),
+            action: "change_ttl".into(),
+            params: None
+        })));
+        assert_invalid_params!(server.zone_rrset_action(Parameters(ZoneRrsetActionArgs {
+            id_or_name: "example.com".into(),
+            rr_name: "www".into(),
+            rr_type: bad,
+            action: "change_ttl".into(),
+            params: None
         })));
     }
 
@@ -1433,12 +1537,13 @@ mod tests {
     }
 
     /// Mirrors compute.rs's router annotation assertion: (read_only,
-    /// destructive) per tool, so flipping a hint on any of the 14 tools
-    /// breaks the suite.
+    /// destructive) per tool, so flipping a hint on any of the 15 tools
+    /// breaks the suite. Also asserts open_world_hint and distinct,
+    /// non-empty titles (N6: parity with net.rs/misc.rs/res_ops.rs).
     #[test]
-    fn lb_zone_ops_router_registers_all_14_tools_with_expected_annotations() {
+    fn lb_zone_ops_router_registers_all_15_tools_with_expected_annotations() {
         let router = super::HcloudServer::lb_zone_ops_router();
-        let expected: [(&str, bool, bool); 14] = [
+        let expected: [(&str, bool, bool); 15] = [
             ("create_load_balancer", false, false),
             ("update_load_balancer", false, false),
             ("delete_load_balancer", false, true),
@@ -1453,8 +1558,10 @@ mod tests {
             ("create_zone_rrset", false, false),
             ("update_zone_rrset", false, false),
             ("delete_zone_rrset", false, true),
+            ("zone_rrset_action", false, true),
         ];
-        assert_eq!(router.list_all().len(), 14);
+        assert_eq!(router.list_all().len(), 15);
+        let mut titles = std::collections::HashSet::new();
         for (name, read_only, destructive) in expected {
             let tool = router
                 .get(name)
@@ -1473,7 +1580,22 @@ mod tests {
                 Some(destructive),
                 "{name} must be destructive_hint = {destructive}"
             );
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(true),
+                "{name} must be open_world_hint = true"
+            );
+            let title = annotations
+                .title
+                .clone()
+                .unwrap_or_else(|| panic!("{name} has no title"));
+            assert!(!title.is_empty(), "{name} title must not be empty");
+            assert!(
+                titles.insert(title.clone()),
+                "title {title:?} reused by more than one tool"
+            );
         }
+        assert_eq!(titles.len(), 15, "every tool must have a distinct title");
     }
 
     /// Pins every allowlist/enum literally, not just "one bad value gets
@@ -1517,6 +1639,101 @@ mod tests {
                 "bandwidth",
             ]
         );
+        assert_eq!(
+            RRSET_ACTIONS,
+            [
+                "change_protection",
+                "change_ttl",
+                "set_records",
+                "add_records",
+                "remove_records",
+                "update_records",
+            ]
+        );
+    }
+
+    /// N9 happy path: every allowlisted rrset action reaches its own
+    /// `/zones/{id_or_name}/rrsets/{name}/{type}/actions/{action}` path with
+    /// the params object forwarded as the POST body.
+    #[tokio::test]
+    async fn zone_rrset_action_reaches_every_allowlisted_action_path() {
+        let mock = MockServer::start().await;
+        for action in RRSET_ACTIONS {
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "/zones/example.com/rrsets/www/A/actions/{action}"
+                )))
+                .and(body_json(serde_json::json!({})))
+                .respond_with(
+                    ResponseTemplate::new(201)
+                        .set_body_json(serde_json::json!({"action": {"command": action}})),
+                )
+                .mount(&mock)
+                .await;
+        }
+
+        let server = server_for(mock.uri());
+        for action in RRSET_ACTIONS {
+            let res = server
+                .zone_rrset_action(Parameters(ZoneRrsetActionArgs {
+                    id_or_name: "example.com".into(),
+                    rr_name: "www".into(),
+                    rr_type: "A".into(),
+                    action: action.into(),
+                    params: None,
+                }))
+                .await
+                .unwrap();
+            assert_eq!(
+                tool_result_json(&res)["action"]["command"],
+                serde_json::json!(action)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn zone_rrset_action_posts_params_to_the_action_path() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/zones/example.com/rrsets/www/A/actions/set_records"))
+            .and(body_json(serde_json::json!({
+                "records": [{"value": "198.51.100.1"}]
+            })))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .zone_rrset_action(Parameters(ZoneRrsetActionArgs {
+                id_or_name: "example.com".into(),
+                rr_name: "www".into(),
+                rr_type: "A".into(),
+                action: "set_records".into(),
+                params: Some(map_of(
+                    serde_json::json!({"records": [{"value": "198.51.100.1"}]}),
+                )),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
+    }
+
+    #[tokio::test]
+    async fn zone_rrset_action_rejects_an_action_outside_the_allowlist() {
+        let err = dead_server()
+            .zone_rrset_action(Parameters(ZoneRrsetActionArgs {
+                id_or_name: "example.com".into(),
+                rr_name: "www".into(),
+                rr_type: "A".into(),
+                action: "delete_zonefile".into(),
+                params: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     /// The BILLABLE warning and the full 13-action list must actually be in

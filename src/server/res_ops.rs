@@ -15,7 +15,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, respond};
+use super::{HcloudServer, IdArgs, require_update_fields, respond};
 
 const IMAGE_ACTIONS: [&str; 1] = ["change_protection"];
 const VOLUME_ACTIONS: [&str; 4] = ["attach", "detach", "resize", "change_protection"];
@@ -163,6 +163,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/images/{id}"), body).await)
     }
 
@@ -222,6 +223,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/ssh_keys/{id}"), body).await)
     }
 
@@ -259,6 +261,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/volumes/{id}"), body).await)
     }
 
@@ -338,6 +341,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(
             self.client
                 .put(&format!("/placement_groups/{id}"), body)
@@ -395,6 +399,7 @@ impl HcloudServer {
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        require_update_fields(&body)?;
         respond(self.client.put(&format!("/certificates/{id}"), body).await)
     }
 
