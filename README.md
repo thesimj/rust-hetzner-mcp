@@ -5,7 +5,7 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/Cargo.toml)
 
 An MCP (stdio) server for the [Hetzner Cloud API](https://docs.hetzner.cloud/),
-in a single Rust binary: 92 tools covering every resource group of
+in a single Rust binary: 93 tools covering every resource group of
 `api.hetzner.cloud/v1`, from listing servers to managing DNS RRSets.
 
 ## Features
@@ -14,6 +14,9 @@ in a single Rust binary: 92 tools covering every resource group of
   servers, images, server types, SSH keys, locations, datacenters, volumes,
   networks, firewalls, Floating IPs, Primary IPs, Load Balancers, certificates,
   ISOs, placement groups, DNS zones and RRSets, action polling, and pricing.
+- **Multiple projects** - one `HCLOUD_TOKEN` can hold several projects'
+  tokens; a `project` argument and the `list_projects` tool select and list
+  them. See [Multiple projects](#multiple-projects).
 - **Safety-annotated tools** - every tool declares `readOnlyHint` and
   `destructiveHint` on the wire; billable creates and permanent deletes say so
   in their descriptions, so MCP clients can gate confirmations correctly.
@@ -96,12 +99,59 @@ it is never logged or written to disk. Do not commit tokens; this repo's
 
 | Variable          | Required | Default                          | Notes                                                                                                                    |
 | ------------------ | -------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `HCLOUD_TOKEN`    | yes      | -                                 | Hetzner Cloud API token, scoped to one project. Create one per [Hetzner's docs](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token). |
+| `HCLOUD_TOKEN`    | yes      | -                                 | Hetzner Cloud API token(s). A single 64-character token names one project `default`; comma-separated `name=token` pairs (names `[a-z0-9._-]{1,64}`, each token exactly 64 characters) configure several - see [Multiple projects](#multiple-projects). Create one per [Hetzner's docs](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token). |
+| `HCLOUD_PROJECT`  | no       | -                                 | Pins a default project by name when `HCLOUD_TOKEN` configures more than one. With the pin, read-only tools may omit `project`; mutating tools still require it. |
 | `HCLOUD_ENDPOINT` | no       | `https://api.hetzner.cloud/v1` | Overrides the API base URL, same convention as the official `hcloud` CLI.                                                |
+
+## Multiple projects
+
+`HCLOUD_TOKEN` accepts two forms:
+
+- **Form A** - a single 64-character token: the one project is named `default`.
+- **Form B** - comma-separated `name=token` pairs, one per project: names
+  match `[a-z0-9._-]{1,64}`, and each token is exactly 64 characters.
+
+```json
+{
+  "mcpServers": {
+    "hetzner": {
+      "command": "hetzner-mcp",
+      "env": {
+        "HCLOUD_TOKEN": "prod=<64-char-token>,staging=<64-char-token>",
+        "HCLOUD_PROJECT": "prod"
+      }
+    }
+  }
+}
+```
+
+With more than one project configured, every pre-existing tool gains a
+`project` argument ("Target project name."); a successful result is wrapped
+as `{"project": ..., "result": ...}`, while an error result instead gets a
+prepended `project: <name>` text line. `HCLOUD_PROJECT` pins a default:
+read-only tools may then omit `project`, but mutating tools always require it
+explicitly. With one project, nothing about the tools or their output
+changes. Use `list_projects` to confirm names and catch a mislabeled token -
+it returns each project's name, whether it's the default, and a lazy
+fingerprint (server count and up to two server names, or
+`unreachable: <error>`); it never returns a token.
+
+At startup, the server rejects (non-zero exit) an empty entry, a name outside
+`[a-z0-9._-]{1,64}`, a token that isn't exactly 64 characters, a duplicate
+name, a duplicate token, mixing named and unnamed entries, or an
+`HCLOUD_PROJECT` that names a project that isn't configured. Every Form-B
+per-entry rejection cites that entry's 1-based index (the Form-A length error
+and an unconfigured `HCLOUD_PROJECT` carry no index); no rejection ever
+quotes a token.
+
+The multi-value form belongs in your MCP client's `env` block: the official
+`hcloud` CLI reads the same `HCLOUD_TOKEN` variable, cannot parse the
+multi-value form, and fails with a bare `401`. One variable holding several
+secrets also means per-project rotation is a whole-value rewrite.
 
 ## Tools
 
-92 tools total, across 8 routers. Every `list_*`/`get_*` tool is read-only.
+93 tools total, across 9 routers. Every `list_*`/`get_*` tool is read-only.
 `*_action` tools take an allowlisted `action` name plus an optional `params`
 object; the allowed actions are noted after each.
 
@@ -229,6 +279,9 @@ object; the allowed actions are noted after each.
 - `get_action` - get a single action by ID; poll until status is success or error
 - `get_pricing` - get current Hetzner Cloud pricing for all resource types
 
+**Projects**
+- `list_projects` - list every configured project by name, with `is_default` and a lazy fingerprint (server count and up to two server names, or `unreachable: <error>`). Never returns a token. See [Multiple projects](#multiple-projects)
+
 ## Coverage
 
 Every resource group and every mutating action endpoint of
@@ -276,7 +329,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The test suite (134 tests) runs entirely against a local mock of the Hetzner
+The test suite (154 tests) runs entirely against a local mock of the Hetzner
 API - no token and no network access to Hetzner are needed to develop.
 
 ## Privacy Policy

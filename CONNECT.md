@@ -245,6 +245,31 @@ Docs: <https://docs.continue.dev/customize/deep-dives/mcp>
 
 ---
 
+## Multiple projects
+
+`HCLOUD_TOKEN` also accepts comma-separated `name=token` pairs to configure
+more than one Hetzner project at once; `HCLOUD_PROJECT` optionally pins which
+one tools use by default. The multi-value form belongs in your MCP client's
+`env` block - the official `hcloud` CLI reads the same variable, cannot parse
+it, and fails with a bare `401`:
+
+```json
+{
+  "mcpServers": {
+    "hetzner": {
+      "command": "hetzner-mcp",
+      "env": {
+        "HCLOUD_TOKEN": "prod=<64-char-token>,staging=<64-char-token>",
+        "HCLOUD_PROJECT": "prod"
+      }
+    }
+  }
+}
+```
+
+Full syntax, startup-rejection rules, and the new `list_projects` tool:
+[README.md](README.md#multiple-projects).
+
 ## Format gotchas at a glance
 
 Most clients use `command` + `env` under a `mcpServers` object (`hetzner-mcp`
@@ -263,7 +288,7 @@ needs no `args`). The exceptions:
 
 ## Verify the connection
 
-Most clients list discovered tools after connecting. You should see 92 tools
+Most clients list discovered tools after connecting. You should see 93 tools
 (`list_servers`, `get_server`, `create_server`, ..., `get_pricing`). Ask the
 agent to *"list my Hetzner servers"* to confirm `list_servers` runs.
 
