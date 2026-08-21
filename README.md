@@ -163,7 +163,7 @@ object; the allowed actions are noted after each.
 **Servers** (compute + servers_ops)
 - `list_servers` - list servers, filterable by name, label selector, or status, with sort support
 - `get_server` - get a server by ID
-- `create_server` - create a server. **Billable.** Response includes `root_password` exactly once
+- `create_server` - create a server, optionally with public_net, networks, firewalls, volumes, placement_group, and automount. **Billable** (public_net's enable_ipv4 defaults to true and bills a Primary IPv4 unless disabled). Response includes `root_password` exactly once
 - `delete_server` - delete a server and all its data. **Destructive**
 - `power_server` - poweron/poweroff/reboot/shutdown a server. **Destructive** (interrupts workloads, except poweron)
 - `update_server` - update a server's name and/or labels
@@ -171,7 +171,7 @@ object; the allowed actions are noted after each.
 - `server_action` - run a server action. **Destructive.** Actions: add_to_placement_group, attach_iso, attach_to_network, change_alias_ips, change_dns_ptr, change_protection, change_type, create_image, detach_from_network, detach_iso, disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, poweron, reboot, rebuild, remove_from_placement_group, request_console, reset, reset_password, shutdown (23 total; poweron/poweroff/reboot/shutdown are also available via `power_server`)
 
 **Images**
-- `list_images` - list images, filterable by type
+- `list_images` - list images, filterable by type, sort, status, bound_to, include_deprecated, name, or label selector
 - `get_image` - get an image by ID
 - `update_image` - update an image's description, type, or labels
 - `delete_image` - delete an image (snapshot or backup) permanently. **Destructive**
@@ -182,7 +182,7 @@ object; the allowed actions are noted after each.
 - `get_server_type` - get a server type by ID
 
 **SSH keys**
-- `list_ssh_keys` - list SSH keys uploaded to the project
+- `list_ssh_keys` - list SSH keys uploaded to the project, filterable by sort, name, fingerprint, or label selector
 - `get_ssh_key` - get an SSH key by ID
 - `create_ssh_key` - upload a new SSH key. Adds a persistent credential
 - `delete_ssh_key` - delete an SSH key from the project. **Destructive**
@@ -195,7 +195,7 @@ object; the allowed actions are noted after each.
 - `get_datacenter` - get a datacenter by ID
 
 **Volumes**
-- `list_volumes` - list block storage volumes, filterable by label selector
+- `list_volumes` - list block storage volumes, filterable by name, label selector, sort, or status
 - `get_volume` - get a volume by ID
 - `create_volume` - create a volume. **Billable**
 - `update_volume` - update a volume's name or labels
@@ -203,7 +203,7 @@ object; the allowed actions are noted after each.
 - `volume_action` - run a volume action. **Destructive.** Actions: attach, detach, resize (grow-only, irreversible), change_protection
 
 **Networks**
-- `list_networks` - list private networks, filterable by label selector
+- `list_networks` - list private networks, filterable by name, label selector, or sort
 - `get_network` - get a network by ID
 - `create_network` - create a private network (free; billed resources attach to it)
 - `update_network` - update a network's name, labels, or vSwitch route exposure
@@ -211,7 +211,7 @@ object; the allowed actions are noted after each.
 - `network_action` - run a network action. **Destructive.** Actions: add_route, add_subnet, change_ip_range, change_protection, delete_route, delete_subnet
 
 **Firewalls**
-- `list_firewalls` - list firewalls, filterable by label selector
+- `list_firewalls` - list firewalls, filterable by name, label selector, or sort
 - `get_firewall` - get a firewall by ID
 - `create_firewall` - create a firewall (free; billed servers it protects are not)
 - `update_firewall` - update a firewall's name or labels
@@ -334,7 +334,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The test suite (160 unit tests + 1 integration test) runs entirely against a
+The test suite (178 unit tests + 1 integration test) runs entirely against a
 local mock of the Hetzner API - no token and no network access to Hetzner are
 needed to develop.
 
