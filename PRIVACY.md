@@ -28,7 +28,8 @@ Your **Hetzner API token** is sent only to that endpoint, as the
 sent anywhere else, never logged, and never written to disk by this software.
 If the API endpoint redirects to a different host, port, or scheme, the
 Authorization header is stripped before following, so a redirect cannot leak
-the token.
+the token. The process may hold several project tokens at once; each is sent
+only with requests to its own project.
 
 Hetzner's handling of this data is governed by Hetzner's own
 [Privacy Policy](https://www.hetzner.com/legal/privacy-policy).

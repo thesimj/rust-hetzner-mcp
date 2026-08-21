@@ -1,6 +1,6 @@
 [package]
 name = "hetzner-mcp"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Nick Bubelich <n+github@bubelich.com>"]
 edition = "2024"
 # Floor set by rmcp 3.x and our use of let-chains.
@@ -12,6 +12,7 @@ homepage = "https://github.com/thesimj/rust-hetzner-mcp"
 readme = "README.md"
 keywords = ["mcp", "hetzner", "hcloud", "cloud", "ai"]
 categories = ["api-bindings", "command-line-utilities"]
+exclude = ["docs/"]
 
 [[bin]]
 name = "hetzner-mcp"
