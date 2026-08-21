@@ -1,5 +1,9 @@
 # hetzner-mcp
 
+<p align="center">
+  <img src="assets/rust-hetzner-mcp-logo.jpg" alt="hetzner-mcp - one Rust binary connecting an AI assistant to Hetzner Cloud: servers, networks, firewalls, DNS Zones, Load Balancers" width="100%">
+</p>
+
 [![crates.io](https://img.shields.io/crates/v/hetzner-mcp.svg)](https://crates.io/crates/hetzner-mcp)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/Cargo.toml)
