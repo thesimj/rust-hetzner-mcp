@@ -14,7 +14,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, pagination_query, push_param,
+    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, pagination_query, push_param,
     require_update_fields, respond, validate_zone_id,
 };
 
@@ -70,11 +70,6 @@ fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
             None,
         ))
     }
-}
-
-/// Turn an action's optional params object into a POST body - `{}` when unset.
-fn action_body(params: Option<serde_json::Map<String, serde_json::Value>>) -> serde_json::Value {
-    params.map_or_else(|| serde_json::json!({}), serde_json::Value::Object)
 }
 
 /// RRSet `name` path segment: non-empty, at most [`MAX_ZONE_ID_LEN`] chars,
@@ -169,9 +164,8 @@ pub(crate) struct LoadBalancerActionArgs {
     pub id: u64,
     /// Action name; see the tool description for the allowed set.
     pub action: String,
-    /// Action-specific parameters object; omit for actions that take no
-    /// parameters. A JSON object (not `serde_json::Value`), so a bare string
-    /// or number can never become the POST body.
+    /// Action-specific parameters object (a JSON object); omit for actions
+    /// that take no parameters.
     pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
@@ -230,9 +224,8 @@ pub(crate) struct ZoneActionArgs {
     pub id_or_name: String,
     /// Action name; see the tool description for the allowed set.
     pub action: String,
-    /// Action-specific parameters object; omit for actions that take no
-    /// parameters. A JSON object (not `serde_json::Value`), so a bare string
-    /// or number can never become the POST body.
+    /// Action-specific parameters object (a JSON object); omit for actions
+    /// that take no parameters.
     pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
@@ -323,9 +316,8 @@ pub(crate) struct ZoneRrsetActionArgs {
     pub rr_type: String,
     /// Action name; see the tool description for the allowed set.
     pub action: String,
-    /// Action-specific parameters object; omit for actions that take no
-    /// parameters. A JSON object (not `serde_json::Value`), so a bare string
-    /// or number can never become the POST body.
+    /// Action-specific parameters object (a JSON object); omit for actions
+    /// that take no parameters.
     pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
@@ -541,6 +533,27 @@ impl HcloudServer {
     }
 
     #[tool(
+        description = "Export a Zone's zonefile in BIND format (returned as {\"zonefile\": ...}).",
+        annotations(
+            title = "Get zone zonefile",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    pub(crate) async fn get_zone_zonefile(
+        &self,
+        Parameters(args): Parameters<ZoneIdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        validate_zone_id(&args.id_or_name)?;
+        respond(
+            self.client
+                .get(&format!("/zones/{}/zonefile", args.id_or_name), &[])
+                .await,
+        )
+    }
+
+    #[tool(
         description = "List the RRSets of a Zone, optionally filtered by name, type, or label selector.",
         annotations(
             title = "List Zone RRSets",
@@ -676,8 +689,10 @@ impl HcloudServer {
 
     #[tool(
         description = "Run an action on an RRSet: add_records, change_protection, \
-        change_ttl, remove_records, set_records, update_records. set_records and \
-        update_records REPLACE data rather than merge it.",
+        change_ttl, remove_records, set_records, update_records. set_records \
+        OVERWRITES the record values; update_records updates record comments \
+        only; add_records auto-creates the RRSet if absent; remove_records \
+        auto-deletes it once it holds no records.",
         annotations(
             title = "Zone RRSet action",
             read_only_hint = false,
@@ -1392,6 +1407,9 @@ mod tests {
             action: "change_ttl".into(),
             params: None
         })));
+        assert_invalid_params!(server.get_zone_zonefile(Parameters(ZoneIdArgs {
+            id_or_name: bad.clone()
+        })));
         assert_invalid_params!(server.list_zone_rrsets(Parameters(ListZoneRrsetsArgs {
             id_or_name: bad.clone(),
             name: None,
@@ -1541,9 +1559,9 @@ mod tests {
     /// breaks the suite. Also asserts open_world_hint and distinct,
     /// non-empty titles (N6: parity with net.rs/misc.rs/res_ops.rs).
     #[test]
-    fn lb_zone_ops_router_registers_all_15_tools_with_expected_annotations() {
+    fn lb_zone_ops_router_registers_all_16_tools_with_expected_annotations() {
         let router = super::HcloudServer::lb_zone_ops_router();
-        let expected: [(&str, bool, bool); 15] = [
+        let expected: [(&str, bool, bool); 16] = [
             ("create_load_balancer", false, false),
             ("update_load_balancer", false, false),
             ("delete_load_balancer", false, true),
@@ -1553,6 +1571,7 @@ mod tests {
             ("update_zone", false, false),
             ("delete_zone", false, true),
             ("zone_action", false, true),
+            ("get_zone_zonefile", true, false),
             ("list_zone_rrsets", true, false),
             ("get_zone_rrset", true, false),
             ("create_zone_rrset", false, false),
@@ -1560,7 +1579,7 @@ mod tests {
             ("delete_zone_rrset", false, true),
             ("zone_rrset_action", false, true),
         ];
-        assert_eq!(router.list_all().len(), 15);
+        assert_eq!(router.list_all().len(), 16);
         let mut titles = std::collections::HashSet::new();
         for (name, read_only, destructive) in expected {
             let tool = router
@@ -1595,7 +1614,7 @@ mod tests {
                 "title {title:?} reused by more than one tool"
             );
         }
-        assert_eq!(titles.len(), 15, "every tool must have a distinct title");
+        assert_eq!(titles.len(), 16, "every tool must have a distinct title");
     }
 
     /// Pins every allowlist/enum literally, not just "one bad value gets

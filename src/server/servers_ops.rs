@@ -76,9 +76,8 @@ pub(crate) struct ServerActionArgs {
     /// Action name; must be one of the actions the Hetzner Cloud API exposes
     /// under POST /servers/{id}/actions/*.
     pub action: String,
-    /// Per-action request body, e.g. {"image": "ubuntu-24.04"} for rebuild.
-    /// Sent as {} when omitted, which is correct for body-less actions.
-    /// Must be a JSON object - a scalar cannot become an HTTP body.
+    /// Per-action request body (a JSON object), e.g. {"image": "ubuntu-24.04"}
+    /// for rebuild. Sent as {} when omitted - correct for body-less actions.
     pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 

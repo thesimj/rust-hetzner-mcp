@@ -15,7 +15,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, require_update_fields, respond};
+use super::{HcloudServer, IdArgs, action_body, require_update_fields, respond};
 
 const IMAGE_ACTIONS: [&str; 1] = ["change_protection"];
 const VOLUME_ACTIONS: [&str; 4] = ["attach", "detach", "resize", "change_protection"];
@@ -40,9 +40,7 @@ fn check_action(action: &str, allowed: &[&str]) -> Result<(), ErrorData> {
 
 /// Action name plus optional action-specific parameters, shared by every
 /// `*_action` tool - the allowed action set differs per tool, so validation
-/// stays in each tool body rather than on this shape. `params` is a JSON
-/// object (not `serde_json::Value`), so a bare string or number can never
-/// become the POST body.
+/// stays in each tool body rather than on this shape.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ActionArgs {
     /// Numeric ID of the resource to act on.
@@ -51,11 +49,6 @@ pub(crate) struct ActionArgs {
     pub action: String,
     /// Action-specific parameters object, e.g. `{"delete": true}` for change_protection.
     pub params: Option<serde_json::Map<String, serde_json::Value>>,
-}
-
-/// Turn an action's optional params object into a POST body - `{}` when unset.
-fn action_body(params: Option<serde_json::Map<String, serde_json::Value>>) -> serde_json::Value {
-    params.map_or_else(|| serde_json::json!({}), serde_json::Value::Object)
 }
 
 /// Body shared by every update tool that only ever sets `name`/`labels`

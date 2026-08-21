@@ -127,10 +127,9 @@ pub(crate) fn push_param(
     }
 }
 
-/// Reject an update body with no fields set. `skip_serializing_if` drops every
-/// unset field, so an all-unset call would otherwise serialize to `{}` and
-/// send a mutating PUT that changes nothing but still hits the API - every
-/// update_* tool must call this between `to_value` and `client.put`.
+/// Reject an update body with no fields set: `skip_serializing_if` makes an
+/// all-unset call serialize to `{}`, which would send a mutating no-op PUT.
+/// Every update_* tool calls this between `to_value` and `client.put`.
 pub(crate) fn require_update_fields(body: &Value) -> Result<(), ErrorData> {
     if body.as_object().is_none_or(serde_json::Map::is_empty) {
         Err(ErrorData::invalid_params(
@@ -186,6 +185,11 @@ pub(crate) fn validate_zone_id(id_or_name: &str) -> Result<(), ErrorData> {
     }
 }
 
+/// Turn an action's optional params object into a POST body - `{}` when unset.
+pub(crate) fn action_body(params: Option<serde_json::Map<String, Value>>) -> Value {
+    params.map_or_else(|| serde_json::json!({}), Value::Object)
+}
+
 /// Start the stdio MCP server and run until the client disconnects.
 pub async fn run() -> anyhow::Result<()> {
     let client = HcloudClient::from_env()?;
@@ -235,9 +239,9 @@ mod tests {
             + HcloudServer::netres_ops_router().list_all().len()
             + HcloudServer::lb_zone_ops_router().list_all().len();
         assert_eq!(server.tool_router.list_all().len(), parts);
-        // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops
+        // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops (lb_zone 16)
         // + 15 res_ops + 16 netres_ops + 15 lb_zone_ops.
-        assert_eq!(server.tool_router.list_all().len(), 91);
+        assert_eq!(server.tool_router.list_all().len(), 92);
     }
 
     #[test]
@@ -247,6 +251,36 @@ mod tests {
         push_param(&mut q, "name", None);
         push_param(&mut q, "status", Some("running".into()));
         assert_eq!(q, vec![("page", "2".into()), ("status", "running".into())]);
+    }
+
+    /// Crate-wide: every tool must carry all three hints and a distinct,
+    /// non-empty title, whatever its router pins locally.
+    #[test]
+    fn every_tool_carries_full_annotations_and_a_distinct_title() {
+        let server = test_support::server_for("http://127.0.0.1:9".to_string());
+        let mut titles = std::collections::HashSet::new();
+        for tool in server.tool_router.list_all() {
+            let a = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: missing annotations", tool.name));
+            assert!(a.read_only_hint.is_some(), "{}: read_only_hint", tool.name);
+            assert!(
+                a.destructive_hint.is_some(),
+                "{}: destructive_hint",
+                tool.name
+            );
+            assert_eq!(
+                a.open_world_hint,
+                Some(true),
+                "{}: open_world_hint",
+                tool.name
+            );
+            let title = a.title.clone().unwrap_or_default();
+            assert!(!title.is_empty(), "{}: empty title", tool.name);
+            assert!(titles.insert(title), "{}: duplicate title", tool.name);
+        }
+        assert_eq!(titles.len(), 92);
     }
 
     #[test]

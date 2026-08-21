@@ -14,7 +14,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{HcloudServer, IdArgs, require_update_fields, respond};
+use super::{HcloudServer, IdArgs, action_body, require_update_fields, respond};
 
 const NETWORK_ACTIONS: [&str; 6] = [
     "add_route",
@@ -38,16 +38,9 @@ pub(crate) struct ActionArgs {
     pub id: u64,
     /// Action name; see this tool's description for the allowed values.
     pub action: String,
-    /// Action-specific request body, forwarded to the API as-is. Omit for
-    /// actions that take no parameters (e.g. unassign). A JSON object (not
-    /// `serde_json::Value`), so a bare string or number can never become the
-    /// POST body.
+    /// Action-specific request body (a JSON object), forwarded to the API
+    /// as-is. Omit for actions that take no parameters (e.g. unassign).
     pub params: Option<Map<String, Value>>,
-}
-
-/// Turn an action's optional params object into a POST body - `{}` when unset.
-fn action_body(params: Option<Map<String, Value>>) -> Value {
-    params.map_or_else(|| serde_json::json!({}), Value::Object)
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
