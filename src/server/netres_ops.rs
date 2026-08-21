@@ -247,16 +247,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if !NETWORK_ACTIONS.contains(&args.action.as_str()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "action must be one of {}, got {:?}",
-                    NETWORK_ACTIONS.join(", "),
-                    args.action
-                ),
-                None,
-            ));
-        }
+        super::check_action(&NETWORK_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -339,16 +330,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if !FIREWALL_ACTIONS.contains(&args.action.as_str()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "action must be one of {}, got {:?}",
-                    FIREWALL_ACTIONS.join(", "),
-                    args.action
-                ),
-                None,
-            ));
-        }
+        super::check_action(&FIREWALL_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -373,6 +355,9 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateFloatingIpArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // D3 item 6 (evidence-gated, KEPT): the official CLI enforces this
+        // same rule client-side - hetznercloud/cli internal/cmd/floatingip/
+        // create.go: `if homeLocation == "" && server == "" { ... }`.
         if args.home_location.is_none() && args.server.is_none() {
             return Err(ErrorData::invalid_params(
                 "home_location is required when server is not given",
@@ -436,16 +421,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if !FLOATING_IP_ACTIONS.contains(&args.action.as_str()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "action must be one of {}, got {:?}",
-                    FLOATING_IP_ACTIONS.join(", "),
-                    args.action
-                ),
-                None,
-            ));
-        }
+        super::check_action(&FLOATING_IP_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -533,16 +509,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if !PRIMARY_IP_ACTIONS.contains(&args.action.as_str()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "action must be one of {}, got {:?}",
-                    PRIMARY_IP_ACTIONS.join(", "),
-                    args.action
-                ),
-                None,
-            ));
-        }
+        super::check_action(&PRIMARY_IP_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
