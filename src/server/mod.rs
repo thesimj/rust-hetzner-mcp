@@ -18,6 +18,8 @@ use crate::hcloud::HcloudClient;
 
 mod compute;
 mod infra;
+mod misc;
+mod net;
 
 #[cfg(test)]
 mod test_support;
@@ -33,7 +35,10 @@ impl HcloudServer {
     pub fn new(client: HcloudClient) -> Self {
         Self {
             client,
-            tool_router: Self::compute_router() + Self::infra_router(),
+            tool_router: Self::compute_router()
+                + Self::infra_router()
+                + Self::net_router()
+                + Self::misc_router(),
         }
     }
 }
@@ -43,14 +48,12 @@ impl ServerHandler for HcloudServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "MCP server for the Hetzner Cloud API. Read tools (list_servers, \
-                get_server, list_images, list_server_types, list_locations, \
-                list_datacenters, list_volumes, list_networks, list_firewalls, \
-                list_ssh_keys and their get_* variants) are safe to call freely. \
-                create_server creates a billable resource and create_ssh_key \
-                adds a persistent credential; delete_server, power_server, and \
-                delete_ssh_key are destructive - confirm with the user before \
-                calling any of these.",
+                "MCP server for the Hetzner Cloud API. Every list_*/get_* tool \
+                is read-only and safe to call freely. create_server creates a \
+                billable resource and create_ssh_key adds a persistent \
+                credential; delete_server, power_server, and delete_ssh_key are \
+                destructive - confirm with the user before calling any of \
+                these.",
             );
         // The objective pins the latest MCP revision; rmcp does not default to
         // it, so name it explicitly (pinned by a test below).
@@ -151,11 +154,16 @@ mod tests {
         );
     }
 
-    /// `+` on ToolRouter silently overwrites on name collision; pin the count.
+    /// `+` on ToolRouter silently overwrites on name collision; the combined
+    /// count must equal the sum of the parts at any count.
     #[test]
-    fn the_combined_router_registers_all_23_tools() {
+    fn the_combined_router_loses_no_tool_to_a_name_collision() {
         let server = test_support::server_for("http://127.0.0.1:9".to_string());
-        assert_eq!(server.tool_router.list_all().len(), 23);
+        let parts = HcloudServer::compute_router().list_all().len()
+            + HcloudServer::infra_router().list_all().len()
+            + HcloudServer::net_router().list_all().len()
+            + HcloudServer::misc_router().list_all().len();
+        assert_eq!(server.tool_router.list_all().len(), parts);
     }
 
     #[test]
