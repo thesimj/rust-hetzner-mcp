@@ -14,8 +14,8 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, check_action, push_param,
-    raw_pagination_query, require_update_fields, respond, validate_zone_id,
+    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, check_action, pagination_query,
+    push_param, require_update_fields, respond, validate_zone_id,
 };
 
 const LB_ACTIONS: [&str; 13] = [
@@ -229,8 +229,8 @@ pub(crate) struct ListZoneRrsetsArgs {
     /// Page number, 1-based.
     #[schemars(range(min = 1))]
     pub page: Option<u32>,
-    /// Results per page (default 25; the spec sets no maximum).
-    #[schemars(range(min = 1))]
+    /// Results per page (default 25, max 50).
+    #[schemars(range(min = 1, max = 50))]
     pub per_page: Option<u32>,
 }
 
@@ -557,7 +557,7 @@ impl HcloudServer {
         Parameters(args): Parameters<ListZoneRrsetsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         validate_zone_id(&args.id_or_name)?;
-        let mut query = raw_pagination_query(args.page, args.per_page);
+        let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.rr_name);
         push_param(&mut query, "label_selector", args.label_selector);
         for t in args.rr_type.into_iter().flatten() {
