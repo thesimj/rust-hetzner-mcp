@@ -252,7 +252,7 @@ needs no `args`). The exceptions:
 
 | Client | Key | Notable difference |
 | --- | --- | --- |
-| VS Code (Copilot) | `servers` | `type: "stdio"` required |
+| VS Code (Copilot) | `servers` | `type: "stdio"` accepted, optional |
 | Zed | `context_servers` | - |
 | Goose | `extensions` | YAML; `cmd` not `command`; `envs` not `env` |
 | opencode | `mcp` | `type: "local"`; `command` is one array; env is `environment` |
