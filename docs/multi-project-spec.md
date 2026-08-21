@@ -44,17 +44,37 @@ not re-litigate these without new evidence.
 
 ## 3. Configuration format
 
-One variable, unchanged in name: **`HCLOUD_TOKEN`**.
+One variable, unchanged in name: **`HCLOUD_TOKEN`**. It accepts exactly two
+forms, and the form is detected from the value itself:
+
+| Form | Value | Meaning |
+|---|---|---|
+| **A - single project** (today's format) | `HCLOUD_TOKEN={key}` | One project. Its name is **`default`**. No `project` property appears on any tool. |
+| **B - multi project** | `HCLOUD_TOKEN={project}={key},{project}={key}[,...]` | N named projects. Each tool gains a `project` property (§6). |
+
+Form B with a single entry (`HCLOUD_TOKEN=prod={key}`) is legal and means one
+project explicitly named `prod`. Form A is exactly equivalent to
+`HCLOUD_TOKEN=default={key}`.
+
+In Form A the name `default` is an internal label, not something the operator
+typed, so a caller may refer to that project as `default`, as the empty string
+`""`, or by omitting the argument entirely - all three mean the same project
+(§4, §5.3). This keeps a client config that was written for Form B working
+after it is reduced to one project.
 
 ### 3.1 Grammar
 
 ```
-HCLOUD_TOKEN := entry ( "," entry )*
-entry        := token                  # unnamed - only legal when it is the ONLY entry
-              | name "=" token
+HCLOUD_TOKEN := form_a | form_b
+form_a       := token                        # single project, name := "default"
+form_b       := named ( "," named )*         # one or more named projects
+named        := name "=" token
 name         := [a-z0-9._-]{1,64}
-token        := [^,=]{64}              # exactly 64 chars, no comma, no '='
+token        := [^,=]{64}                    # exactly 64 chars, no comma, no '='
 ```
+
+Form detection: a value containing no `=` is Form A. A value containing `=` is
+Form B, and then **every** entry must be named (§3.2 rule 5).
 
 Examples:
 
@@ -74,9 +94,9 @@ Optional companion variable:
 ### 3.2 Parse rules (all mandatory)
 
 1. Split on `,`. Trim ASCII whitespace around each entry and around name/token.
-2. **Exactly one entry, no `=`** → one unnamed project. Its internal name is
-   `default`. This is the backward-compatible path (§8).
-3. **Any entry containing `=`** → named mode. Split on the **first** `=`.
+2. **No `=` anywhere** → Form A: one project, name `default`. This is the
+   backward-compatible path (§8).
+3. **Any `=` present** → Form B: split each entry on its **first** `=`.
 4. **Validate every token at exactly 64 characters.** This is not optional: it
    is the guard that turns C7's unproven charset into a loud failure instead of
    silent credential corruption. The spike proved the failure mode —
@@ -89,7 +109,8 @@ Optional companion variable:
    - a **duplicate name**,
    - a **duplicate token** — two names for one project is undetectable via the
      API (C2), so "I deleted it in staging" could mean prod,
-   - a mix of named and unnamed entries when there is more than one entry,
+   - an entry without a `name=` prefix while any other entry has one (once the
+     value contains an `=` it is Form B, and every entry must be named),
    - `HCLOUD_PROJECT` naming a project that is not configured.
 6. **Startup errors must never quote a token value.** Refer to the entry by its
    1-based index: `HCLOUD_TOKEN entry 2: token must be exactly 64 characters`.
@@ -111,7 +132,9 @@ Executed per tool call, before dispatch. `n` = number of configured projects.
 ```
 1. n == 1
      a. call carries no `project`            -> use the only token
-     b. call carries `project`               -> ERROR invalid_params (§5.3)
+     b. `project` matches the configured name (Form A: "default", or "")
+                                             -> use the only token
+     c. `project` is any other value         -> ERROR invalid_params (§5.3)
 2. n > 1
      a. call carries `project` = known name  -> use that token
      b. call carries `project` = unknown     -> ERROR invalid_params (§5.2)
@@ -150,12 +173,15 @@ unknown project "prodd"; configured projects: prod, staging
 ```
 Exact match only. **No** fuzzy matching, prefix matching, or case folding.
 
-**5.3 Selector supplied in single-project mode**
+**5.3 Unknown selector in single-project mode**
 ```
-project "prod" is not configured; this server has a single unnamed project
+unknown project "prod"; this server has one project: default
 ```
-Reject rather than ignore: a model that names a project it believes exists must
-not be told the call succeeded against a different one.
+Accepted without error in single-project mode: the argument omitted, the
+configured name (`default` in Form A, or the operator's name in a one-entry
+Form B), or the empty string `""`. Anything else is rejected rather than
+ignored - a model that names a project it believes exists must not be told the
+call succeeded against a different one.
 
 Every message lists the configured names so the model recovers in one turn.
 No message ever contains a token.
@@ -288,7 +314,8 @@ the title pin at `:283` must move).
 - Annotations: `read_only_hint = true`, `destructive_hint = false`.
 - Never accepts or returns a token. Returns, per project: the configured
   `name`, and `is_default` (whether `HCLOUD_PROJECT` pins it).
-- Must work in single-project mode too, returning the one `default` entry.
+- Must work in single-project mode too: Form A returns the single entry named
+  `default`; a one-entry Form B returns that entry's operator-chosen name.
 
 ### 9.1 Optional: mislabel detection (recommended)
 
@@ -316,7 +343,9 @@ the first server.
 | T3 | routing | `project: "staging"` sends the staging token (wiremock `header("authorization", "Bearer …")`, the pattern already used at `src/hcloud.rs:196`) |
 | T4 | ambiguity | n>1, no selector, no pin → `INVALID_PARAMS`, message lists both names, **zero HTTP requests** |
 | T5 | unknown name | → `INVALID_PARAMS` naming the configured projects, zero HTTP |
-| T6 | selector in single-project mode | → `INVALID_PARAMS`, zero HTTP |
+| T6 | unknown selector in single-project mode | `project:"prod"` with Form A → `INVALID_PARAMS`, zero HTTP |
+| T6b | accepted selectors in single-project mode | Form A with `project:"default"`, with `project:""`, and with the argument omitted all succeed against the one token |
+| T6c | Form A ≡ `default=` | `HCLOUD_TOKEN={key}` and `HCLOUD_TOKEN=default={key}` produce identical behaviour and identical `tools/list` bytes |
 | T7 | pinned default | `HCLOUD_PROJECT=prod`, no selector → prod token on the wire |
 | T8 | read-only vs mutating default (if §4 hardening is adopted) | pinned default applies to `list_servers`; `delete_server` without a selector → `INVALID_PARAMS` |
 | T9 | parse: every rejection in §3.2 | non-zero exit, and the error text **contains no token substring** |
