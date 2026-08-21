@@ -16,17 +16,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, pagination_query, push_param, respond};
-
-/// Maximum length of a DNS zone name (RFC 1035).
-const MAX_ZONE_ID_LEN: usize = 253;
-
-/// Numeric ID of the resource to fetch.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct IdArgs {
-    /// Numeric ID of the resource, from the matching list_* tool's response.
-    pub id: u64,
-}
+use super::{HcloudServer, IdArgs, pagination_query, push_param, respond, validate_zone_id};
 
 /// Pagination plus name/label/sort/type filters, shared by list tools whose
 /// spec entry lists all four (certificates, placement_groups).
@@ -130,32 +120,6 @@ pub(crate) struct ZoneIdArgs {
     /// Zone ID or name, from list_zones. ASCII letters, digits, '.', and '-'
     /// only; not "." or containing "..".
     pub id_or_name: String,
-}
-
-/// Reject anything but a bare, non-dot-segment path component before it
-/// reaches the URL. This is the only string this crate puts in a request
-/// path: an unvalidated "." collapses the URL to the collection endpoint
-/// (`/zones/.` -> `/zones/`, wire-confirmed), and ".." can walk it elsewhere.
-fn validate_zone_id(id_or_name: &str) -> Result<(), ErrorData> {
-    let valid = !id_or_name.is_empty()
-        && id_or_name.len() <= MAX_ZONE_ID_LEN
-        && id_or_name != "."
-        && !id_or_name.contains("..")
-        && id_or_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    if valid {
-        Ok(())
-    } else {
-        Err(ErrorData::invalid_params(
-            format!(
-                "id_or_name must be non-empty, at most {MAX_ZONE_ID_LEN} characters, must not \
-                 be \".\" or contain \"..\", and must contain only ASCII letters, digits, '.', \
-                 or '-'"
-            ),
-            None,
-        ))
-    }
 }
 
 #[tool_router(router = misc_router, vis = "pub(crate)")]

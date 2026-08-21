@@ -15,7 +15,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, respond};
+use super::{HcloudServer, IdArgs, respond};
 
 const IMAGE_ACTIONS: [&str; 1] = ["change_protection"];
 const VOLUME_ACTIONS: [&str; 4] = ["attach", "detach", "resize", "change_protection"];
@@ -36,13 +36,6 @@ fn check_action(action: &str, allowed: &[&str]) -> Result<(), ErrorData> {
             None,
         ))
     }
-}
-
-/// Numeric ID of the resource to delete.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct IdArgs {
-    /// Numeric ID of the resource, from the matching list_*/get_* tool's response.
-    pub id: u64,
 }
 
 /// Action name plus optional action-specific parameters, shared by every

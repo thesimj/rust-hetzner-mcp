@@ -14,7 +14,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{HcloudServer, respond};
+use super::{HcloudServer, IdArgs, respond};
 
 const NETWORK_ACTIONS: [&str; 6] = [
     "add_route",
@@ -28,13 +28,6 @@ const FIREWALL_ACTIONS: [&str; 3] = ["apply_to_resources", "remove_from_resource
 const FLOATING_IP_ACTIONS: [&str; 4] =
     ["assign", "unassign", "change_dns_ptr", "change_protection"];
 const PRIMARY_IP_ACTIONS: [&str; 4] = ["assign", "unassign", "change_dns_ptr", "change_protection"];
-
-/// Numeric ID of a single resource, shared by the delete tools.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct IdArgs {
-    /// Numeric ID of the resource, as returned by its matching list_* tool.
-    pub id: u64,
-}
 
 /// Shape shared by all four `*_action` tools: an allowlisted action name
 /// plus an optional passthrough body. The allowlist differs per tool and is

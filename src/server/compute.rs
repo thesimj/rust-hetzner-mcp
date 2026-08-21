@@ -16,17 +16,9 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, pagination_query, push_param, respond};
+use super::{HcloudServer, IdArgs, pagination_query, push_param, respond};
 
 const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
-
-/// Numeric ID of a single resource, shared by the get/delete-by-id tools.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct IdArgs {
-    /// Numeric ID of the resource, as returned in the `id` field by this
-    /// tool's corresponding list_* tool (e.g. list_servers for get_server).
-    pub id: u64,
-}
 
 /// `page`/`per_page` pagination, shared by the list tools with no other filters.
 #[derive(Debug, Deserialize, JsonSchema)]

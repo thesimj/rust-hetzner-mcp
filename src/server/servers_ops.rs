@@ -8,7 +8,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, push_param, respond};
+use super::{HcloudServer, IdArgs, push_param, respond};
 
 /// The full set of `POST /servers/{id}/actions/*` commands in the spec.
 /// power_server already covers poweron/poweroff/reboot/shutdown; this tool
@@ -40,14 +40,6 @@ const SERVER_ACTIONS: [&str; 23] = [
 ];
 
 const METRIC_TYPES: [&str; 3] = ["cpu", "disk", "network"];
-
-/// Numeric ID of an action to poll.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct IdArgs {
-    /// Numeric ID of the action, e.g. the `action.id` in a mutation's
-    /// response, or an ID already known and passed to list_actions.
-    pub id: u64,
-}
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct UpdateServerArgs {

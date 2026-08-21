@@ -13,14 +13,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, pagination_query, push_param, respond};
-
-/// Numeric ID of the resource to fetch.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct IdArgs {
-    /// Numeric ID of the resource, from the matching list_* tool's response.
-    pub id: u64,
-}
+use super::{HcloudServer, IdArgs, pagination_query, push_param, respond};
 
 /// Pagination shared by list tools with no label filter.
 #[derive(Debug, Deserialize, JsonSchema)]

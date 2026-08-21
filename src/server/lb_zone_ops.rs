@@ -13,7 +13,9 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, pagination_query, push_param, respond};
+use super::{
+    HcloudServer, MAX_ZONE_ID_LEN, pagination_query, push_param, respond, validate_zone_id,
+};
 
 const LB_ACTIONS: [&str; 13] = [
     "add_service",
@@ -45,9 +47,6 @@ const METRIC_TYPES: [&str; 4] = [
     "bandwidth",
 ];
 
-/// DNS max length; also the post-B28 canonical bound for a zone id/name path segment.
-const MAX_ZONE_ID_LEN: usize = 253;
-
 fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
     if allowed.contains(&action) {
         Ok(())
@@ -57,35 +56,6 @@ fn check_action(allowed: &[&str], action: &str) -> Result<(), ErrorData> {
                 "action must be one of {}, got {:?}",
                 allowed.join(", "),
                 action
-            ),
-            None,
-        ))
-    }
-}
-
-/// Mirrors misc.rs's post-B28 `validate_zone_id` rule (non-empty, at most
-/// [`MAX_ZONE_ID_LEN`] chars, not exactly ".", no ".." substring, and chars
-/// restricted to `[A-Za-z0-9.-]`). Duplicated here: that fn is private to
-/// misc.rs and its skeleton predates this brief, so it cannot be called
-/// across modules. A bare "." passes the charset check but the client's URL
-/// join collapses it, wire-confirmed to retarget `DELETE /zones/{id}` (and
-/// the zone_action path) onto the `/zones` collection endpoint - the extra
-/// clauses below close that hole.
-fn validate_zone_id(id_or_name: &str) -> Result<(), ErrorData> {
-    let ok = !id_or_name.is_empty()
-        && id_or_name.len() <= MAX_ZONE_ID_LEN
-        && id_or_name != "."
-        && !id_or_name.contains("..")
-        && id_or_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    if ok {
-        Ok(())
-    } else {
-        Err(ErrorData::invalid_params(
-            format!(
-                "id_or_name must be non-empty, at most {MAX_ZONE_ID_LEN} chars, not \".\", not \
-                 contain \"..\", and contain only [A-Za-z0-9.-], got {id_or_name:?}"
             ),
             None,
         ))

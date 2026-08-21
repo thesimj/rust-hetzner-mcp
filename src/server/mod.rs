@@ -127,6 +127,42 @@ pub(crate) fn push_param(
     }
 }
 
+/// Numeric ID of a single resource, shared by the by-id tools across seams.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct IdArgs {
+    /// Numeric ID of the resource, from the matching list_* tool's response
+    /// (or, for actions, a mutation response's `action.id`).
+    pub id: u64,
+}
+
+/// Maximum length of a DNS zone name (RFC 1035).
+pub(crate) const MAX_ZONE_ID_LEN: usize = 253;
+
+/// Reject anything but a bare, non-dot-segment path component before it
+/// reaches the URL: "." collapses to the collection endpoint (wire-confirmed)
+/// and ".." can walk the path elsewhere.
+pub(crate) fn validate_zone_id(id_or_name: &str) -> Result<(), ErrorData> {
+    let valid = !id_or_name.is_empty()
+        && id_or_name.len() <= MAX_ZONE_ID_LEN
+        && id_or_name != "."
+        && !id_or_name.contains("..")
+        && id_or_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(ErrorData::invalid_params(
+            format!(
+                "id_or_name must be non-empty, at most {MAX_ZONE_ID_LEN} characters, must not \
+                 be \".\" or contain \"..\", and must contain only ASCII letters, digits, '.', \
+                 or '-'"
+            ),
+            None,
+        ))
+    }
+}
+
 /// Start the stdio MCP server and run until the client disconnects.
 pub async fn run() -> anyhow::Result<()> {
     let client = HcloudClient::from_env()?;
@@ -176,6 +212,9 @@ mod tests {
             + HcloudServer::netres_ops_router().list_all().len()
             + HcloudServer::lb_zone_ops_router().list_all().len();
         assert_eq!(server.tool_router.list_all().len(), parts);
+        // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops
+        // + 15 res_ops + 16 netres_ops + 14 lb_zone_ops.
+        assert_eq!(server.tool_router.list_all().len(), 90);
     }
 
     #[test]
