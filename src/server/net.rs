@@ -4,9 +4,11 @@
 //! Filter sets differ per endpoint (verified against the Hetzner spec), so
 //! args structs are shared only where the shape is genuinely identical:
 //! `NameLabelSortPageArgs` covers both list_floating_ips and
-//! list_load_balancers, which expose the same name/label_selector/sort/page
-//! filters. list_primary_ips adds an `ip` filter and list_load_balancer_types
-//! drops label_selector/sort, so each gets its own struct.
+//! list_load_balancers, which take the same name/label_selector/sort/page
+//! fields - though the `sort` value *enum* differs (load_balancers also
+//! accepts name:asc/name:desc; floating_ips does not). list_primary_ips adds
+//! an `ip` filter and list_load_balancer_types drops label_selector/sort, so
+//! each gets its own struct.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -31,7 +33,8 @@ pub(crate) struct NameLabelSortPageArgs {
     pub name: Option<String>,
     /// Label selector to filter results, e.g. "env=prod".
     pub label_selector: Option<String>,
-    /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
+    /// Sort order, e.g. "id:asc" or "created:desc"; repeatable. (Only
+    /// list_load_balancers also accepts name:asc/name:desc.)
     pub sort: Option<Vec<String>>,
     /// Page number to fetch, 1-based.
     #[schemars(range(min = 1))]
@@ -261,6 +264,7 @@ mod tests {
             .and(query_param("name", "web-1"))
             .and(query_param("label_selector", "env=prod"))
             .and(query_param("sort", "id:asc"))
+            .and(query_param("sort", "created:desc"))
             .and(query_param("page", "1"))
             .and(query_param("per_page", "25"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -311,7 +315,7 @@ mod tests {
                     .list_floating_ips(Parameters(NameLabelSortPageArgs {
                         name: Some("web-1".to_string()),
                         label_selector: Some("env=prod".to_string()),
-                        sort: Some(vec!["id:asc".to_string()]),
+                        sort: Some(vec!["id:asc".to_string(), "created:desc".to_string()]),
                         page: Some(1),
                         per_page: Some(25)
                     }))
@@ -397,6 +401,37 @@ mod tests {
         );
     }
 
+    /// F5: an empty `ip` filter must be dropped, not sent as `?ip=`.
+    #[tokio::test]
+    async fn list_primary_ips_drops_an_empty_ip_filter() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/primary_ips"))
+            .and(query_param_is_missing("ip"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"primary_ips": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let hcloud = server_for(server.uri());
+        let res = hcloud
+            .list_primary_ips(Parameters(ListPrimaryIpsArgs {
+                name: None,
+                label_selector: None,
+                ip: Some(String::new()),
+                sort: None,
+                page: None,
+                per_page: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"primary_ips": []})
+        );
+    }
+
     /// Every get_* tool builds `/{resource}/{id}` and passes the envelope through.
     /// F2: also proves the id is actually interpolated, not hardcoded - a
     /// request for an unmounted id must fail rather than silently succeed.
@@ -466,14 +501,41 @@ mod tests {
             serde_json::json!({"load_balancer_type": {"id": 5}})
         );
 
-        let unmounted = hcloud
-            .get_load_balancer(Parameters(IdArgs { id: 999 }))
-            .await
-            .unwrap();
         assert_eq!(
-            unmounted.is_error,
+            hcloud
+                .get_floating_ip(Parameters(IdArgs { id: 999 }))
+                .await
+                .unwrap()
+                .is_error,
             Some(true),
-            "an id with no mounted mock must not resolve to another tool's route"
+            "get_floating_ip: an unmounted id must not resolve to another tool's route"
+        );
+        assert_eq!(
+            hcloud
+                .get_primary_ip(Parameters(IdArgs { id: 999 }))
+                .await
+                .unwrap()
+                .is_error,
+            Some(true),
+            "get_primary_ip: an unmounted id must not resolve to another tool's route"
+        );
+        assert_eq!(
+            hcloud
+                .get_load_balancer(Parameters(IdArgs { id: 999 }))
+                .await
+                .unwrap()
+                .is_error,
+            Some(true),
+            "get_load_balancer: an unmounted id must not resolve to another tool's route"
+        );
+        assert_eq!(
+            hcloud
+                .get_load_balancer_type(Parameters(IdArgs { id: 999 }))
+                .await
+                .unwrap()
+                .is_error,
+            Some(true),
+            "get_load_balancer_type: an unmounted id must not resolve to another tool's route"
         );
     }
 
@@ -501,6 +563,8 @@ mod tests {
 
     #[test]
     fn net_router_registers_all_eight_tools_with_read_only_annotations() {
+        use std::collections::HashSet;
+
         let router = super::HcloudServer::net_router();
         let names = [
             "list_floating_ips",
@@ -513,6 +577,7 @@ mod tests {
             "get_load_balancer_type",
         ];
         assert_eq!(router.list_all().len(), 8);
+        let mut titles = HashSet::new();
         for name in names {
             let tool = router
                 .get(name)
@@ -530,6 +595,20 @@ mod tests {
                 annotations.destructive_hint,
                 Some(false),
                 "{name} must be destructive_hint = false"
+            );
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(true),
+                "{name} must be open_world_hint = true"
+            );
+            let title = annotations
+                .title
+                .as_deref()
+                .unwrap_or_else(|| panic!("{name} has no title"));
+            assert!(!title.is_empty(), "{name} must have a non-empty title");
+            assert!(
+                titles.insert(title),
+                "{name}'s title {title:?} is not distinct from another tool's"
             );
         }
     }
