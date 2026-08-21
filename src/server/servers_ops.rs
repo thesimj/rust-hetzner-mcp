@@ -186,16 +186,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ServerActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if !SERVER_ACTIONS.contains(&args.action.as_str()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "action must be one of {}, got {:?}",
-                    SERVER_ACTIONS.join(", "),
-                    args.action
-                ),
-                None,
-            ));
-        }
+        super::check_action(&SERVER_ACTIONS, &args.action)?;
         let body = super::action_body(args.params);
         respond(
             self.client
