@@ -1,0 +1,90 @@
+name: CI
+
+# Fast quality gate on every push and PR: format, lint, and the full test suite.
+# The release workflow (release-mcpb.yml) only runs on a version tag, so without
+# this nothing exercises the tests before a release ships. Kept to a single Linux
+# runner for speed — the cross-platform build is proven at release time.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel an in-progress run when a newer commit lands on the same ref, so a busy
+# PR doesn't queue stale jobs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build on any warning, matching the clippy gate below.
+  RUSTFLAGS: -D warnings
+
+# Third-party actions are pinned to a full commit SHA, not a tag: a tag can be
+# moved to point at different code, and these run in the same job as our build.
+# actions/* are first-party and keep a floating major tag.
+#   dtolnay/rust-toolchain@master  -> 6c977a6 (2026-08)
+#   Swatinem/rust-cache@v2.9.2     -> 6323deb
+# The `master` branch of rust-toolchain makes `toolchain` a required input, so
+# each job states the toolchain it wants instead of encoding it in the ref.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  # The declared `rust-version` is a promise to anyone running `cargo install`:
+  # cargo refuses the build outright on an older toolchain. The `check` job above
+  # runs on stable and so can never catch the floor drifting upward, which is how
+  # a stale MSRV goes unnoticed until a user reports it.
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Declared MSRV: $version"
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      # Build tests too: a dev-dependency or test-only construct can raise the
+      # real floor just as easily as library code.
+      - name: Check at the declared MSRV
+        run: cargo check --all-targets --locked

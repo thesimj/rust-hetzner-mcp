@@ -2,6 +2,9 @@
 /target
 debug/
 
+# MCPB build output (scripts/build-mcpb.mjs)
+/dist
+
 # Cargo.lock is committed on purpose: this crate ships a binary,
 # and a tracked lockfile gives reproducible builds.
 

@@ -1,0 +1,21 @@
+version: 2
+
+# Weekly, grouped, so it is one PR per ecosystem rather than a dozen.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Patch and minor bumps land as one PR; a major gets its own, because
+      # that is the one worth reading.
+      compatible:
+        update-types: ["minor", "patch"]

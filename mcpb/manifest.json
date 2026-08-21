@@ -1,0 +1,437 @@
+{
+  "manifest_version": "0.2",
+  "name": "hetzner-mcp",
+  "display_name": "Hetzner Cloud",
+  "version": "0.3.0",
+  "description": "Manage Hetzner Cloud from Claude: servers, volumes, networks, firewalls, Load Balancers, DNS Zones, and more.",
+  "long_description": "A single Rust binary that exposes the Hetzner Cloud API to Claude over MCP: 93 tools covering servers, images, volumes, networks, firewalls, Floating and Primary IPs, Load Balancers, certificates, SSH keys, placement groups, and DNS Zones. Every tool is safety-annotated (read-only vs mutating), results are plain JSON, and one HCLOUD_TOKEN can hold several projects' tokens (\"prod=<token>,staging=<token>\") with per-call project routing and a list_projects discovery tool. Bring your own Hetzner API token.",
+  "author": {
+    "name": "Nick Bubelich",
+    "url": "https://github.com/thesimj"
+  },
+  "homepage": "https://github.com/thesimj/rust-hetzner-mcp",
+  "documentation": "https://github.com/thesimj/rust-hetzner-mcp#readme",
+  "support": "https://github.com/thesimj/rust-hetzner-mcp/issues",
+  "icon": "icon.png",
+  "license": "Apache-2.0",
+  "keywords": [
+    "hetzner",
+    "hcloud",
+    "cloud",
+    "servers",
+    "dns",
+    "infrastructure"
+  ],
+  "privacy_policies": [
+    "https://github.com/thesimj/rust-hetzner-mcp/blob/main/PRIVACY.md"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/hetzner-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/bin/hetzner-mcp",
+      "args": [],
+      "env": {
+        "HCLOUD_TOKEN": "${user_config.hcloud_token}",
+        "HCLOUD_PROJECT": "${user_config.hcloud_project}"
+      }
+    }
+  },
+  "tools_generated": false,
+  "tools": [
+    {
+      "name": "certificate_action",
+      "description": "Run a certificate action: retry, which retries issuance for a failed managed certificate."
+    },
+    {
+      "name": "create_certificate",
+      "description": "Upload a certificate, or request a managed Let's Encrypt certificate."
+    },
+    {
+      "name": "create_firewall",
+      "description": "Create a firewall that can be applied to servers. Firewalls themselves are free; only the servers they protect are billed."
+    },
+    {
+      "name": "create_floating_ip",
+      "description": "Create a Floating IP. This creates a BILLABLE resource."
+    },
+    {
+      "name": "create_load_balancer",
+      "description": "Create a new Load Balancer. This creates a BILLABLE resource."
+    },
+    {
+      "name": "create_network",
+      "description": "Create a private network. Networks themselves are free; only the resources you attach to them (e.g. servers) are billed."
+    },
+    {
+      "name": "create_placement_group",
+      "description": "Create a new placement group to control server co-location."
+    },
+    {
+      "name": "create_primary_ip",
+      "description": "Create a Primary IP. This creates a BILLABLE resource."
+    },
+    {
+      "name": "create_server",
+      "description": "Create a new server. This creates a BILLABLE resource. The response contains the root_password exactly once - it is not retrievable afterwards."
+    },
+    {
+      "name": "create_ssh_key",
+      "description": "Upload a new SSH key to the project."
+    },
+    {
+      "name": "create_volume",
+      "description": "Create a new block storage volume. This creates a BILLABLE resource."
+    },
+    {
+      "name": "create_zone",
+      "description": "Create a new DNS Zone. A mode \"secondary\" Zone needs primary_nameservers set here, or afterwards via zone_action's change_primary_nameservers, to be functional."
+    },
+    {
+      "name": "create_zone_rrset",
+      "description": "Create a new RRSet in a Zone."
+    },
+    {
+      "name": "delete_certificate",
+      "description": "Delete a certificate permanently."
+    },
+    {
+      "name": "delete_firewall",
+      "description": "Delete a firewall permanently."
+    },
+    {
+      "name": "delete_floating_ip",
+      "description": "Delete a Floating IP permanently."
+    },
+    {
+      "name": "delete_image",
+      "description": "Delete an image permanently. Only snapshots and backups can be deleted."
+    },
+    {
+      "name": "delete_load_balancer",
+      "description": "Delete a Load Balancer permanently."
+    },
+    {
+      "name": "delete_network",
+      "description": "Delete a network permanently."
+    },
+    {
+      "name": "delete_placement_group",
+      "description": "Delete a placement group permanently."
+    },
+    {
+      "name": "delete_primary_ip",
+      "description": "Delete a Primary IP permanently."
+    },
+    {
+      "name": "delete_server",
+      "description": "Delete a server permanently. This destroys the server and all its data."
+    },
+    {
+      "name": "delete_ssh_key",
+      "description": "Delete an SSH key from the project permanently."
+    },
+    {
+      "name": "delete_volume",
+      "description": "Delete a volume permanently. It must be detached from any server first."
+    },
+    {
+      "name": "delete_zone",
+      "description": "Delete a Zone permanently, including all its RRSets."
+    },
+    {
+      "name": "delete_zone_rrset",
+      "description": "Delete an RRSet from a Zone permanently."
+    },
+    {
+      "name": "firewall_action",
+      "description": "Run an action on a firewall: apply_to_resources, remove_from_resources, or set_rules. set_rules REPLACES the firewall's entire rule set with `params.rules`, not just adds to it."
+    },
+    {
+      "name": "floating_ip_action",
+      "description": "Run an action on a Floating IP: assign, unassign, change_dns_ptr, or change_protection."
+    },
+    {
+      "name": "get_action",
+      "description": "Get a single action by ID. Actions are asynchronous; poll this until status is success or error."
+    },
+    {
+      "name": "get_actions",
+      "description": "Fetch one or more actions by ID. The API removed listing all actions, so at least one id is required."
+    },
+    {
+      "name": "get_certificate",
+      "description": "Get a single TLS certificate by ID."
+    },
+    {
+      "name": "get_datacenter",
+      "description": "Get a single datacenter by ID."
+    },
+    {
+      "name": "get_firewall",
+      "description": "Get a single firewall by ID."
+    },
+    {
+      "name": "get_floating_ip",
+      "description": "Get a single Floating IP by ID."
+    },
+    {
+      "name": "get_image",
+      "description": "Get a single image by ID."
+    },
+    {
+      "name": "get_iso",
+      "description": "Get a single ISO by ID."
+    },
+    {
+      "name": "get_load_balancer",
+      "description": "Get a single Load Balancer by ID."
+    },
+    {
+      "name": "get_load_balancer_metrics",
+      "description": "Get time-series metrics for a Load Balancer."
+    },
+    {
+      "name": "get_load_balancer_type",
+      "description": "Get a single Load Balancer type by ID."
+    },
+    {
+      "name": "get_location",
+      "description": "Get a single location by ID."
+    },
+    {
+      "name": "get_network",
+      "description": "Get a single network by ID."
+    },
+    {
+      "name": "get_placement_group",
+      "description": "Get a single placement group by ID."
+    },
+    {
+      "name": "get_pricing",
+      "description": "Get current Hetzner Cloud pricing for all resource types."
+    },
+    {
+      "name": "get_primary_ip",
+      "description": "Get a single Primary IP by ID."
+    },
+    {
+      "name": "get_server",
+      "description": "Get a single server by ID."
+    },
+    {
+      "name": "get_server_metrics",
+      "description": "Get CPU, disk, or network metrics for a server over a time period. type is repeatable (pass it more than once for more than one metric); start/end are RFC3339 timestamps. Metrics are available for the last 30 days only."
+    },
+    {
+      "name": "get_server_type",
+      "description": "Get a single server type by ID."
+    },
+    {
+      "name": "get_ssh_key",
+      "description": "Get a single SSH key by ID."
+    },
+    {
+      "name": "get_volume",
+      "description": "Get a single volume by ID."
+    },
+    {
+      "name": "get_zone",
+      "description": "Get a single DNS Zone by ID or name."
+    },
+    {
+      "name": "get_zone_rrset",
+      "description": "Get a single RRSet by Zone and name/type."
+    },
+    {
+      "name": "get_zone_zonefile",
+      "description": "Export a Zone's zonefile in BIND format (returned as {\"zonefile\": ...}). The inverse is zone_action's import_zonefile."
+    },
+    {
+      "name": "image_action",
+      "description": "Run an image action: change_protection, which toggles delete protection."
+    },
+    {
+      "name": "list_certificates",
+      "description": "List TLS certificates, optionally filtered by name, label selector, sort, or type."
+    },
+    {
+      "name": "list_datacenters",
+      "description": "List datacenters Hetzner Cloud resources can run in."
+    },
+    {
+      "name": "list_firewalls",
+      "description": "List firewalls."
+    },
+    {
+      "name": "list_floating_ips",
+      "description": "List Floating IPs, optionally filtered by name, label selector, or sort order."
+    },
+    {
+      "name": "list_images",
+      "description": "List available images, optionally filtered by type."
+    },
+    {
+      "name": "list_isos",
+      "description": "List ISOs available to attach to servers, optionally filtered by name, architecture, or the architecture wildcard flag."
+    },
+    {
+      "name": "list_load_balancer_types",
+      "description": "List Load Balancer types, optionally filtered by name."
+    },
+    {
+      "name": "list_load_balancers",
+      "description": "List Load Balancers, optionally filtered by name, label selector, or sort order."
+    },
+    {
+      "name": "list_locations",
+      "description": "List locations Hetzner Cloud resources can run in."
+    },
+    {
+      "name": "list_networks",
+      "description": "List private networks."
+    },
+    {
+      "name": "list_placement_groups",
+      "description": "List placement groups, optionally filtered by name, label selector, sort, or type."
+    },
+    {
+      "name": "list_primary_ips",
+      "description": "List Primary IPs, optionally filtered by name, label selector, IP, or sort order."
+    },
+    {
+      "name": "list_projects",
+      "description": "List every configured Hetzner project by name, with a cheap fingerprint (server count and up to two server names) to catch a mislabeled token. Never returns a token."
+    },
+    {
+      "name": "list_server_types",
+      "description": "List available server types (plans)."
+    },
+    {
+      "name": "list_servers",
+      "description": "List servers, optionally filtered by name, label selector, or status."
+    },
+    {
+      "name": "list_ssh_keys",
+      "description": "List SSH keys uploaded to the project."
+    },
+    {
+      "name": "list_volumes",
+      "description": "List block storage volumes."
+    },
+    {
+      "name": "list_zone_rrsets",
+      "description": "List the RRSets of a Zone, optionally filtered by name, type, or label selector."
+    },
+    {
+      "name": "list_zones",
+      "description": "List DNS Zones, optionally filtered by name, label selector, sort, or mode."
+    },
+    {
+      "name": "load_balancer_action",
+      "description": "Run an action on a Load Balancer. action must be one of: add_service, add_target, attach_to_network, change_algorithm, change_dns_ptr, change_protection, change_type, delete_service, detach_from_network, disable_public_interface, enable_public_interface, remove_target, update_service. Several of these interrupt traffic or change routing."
+    },
+    {
+      "name": "network_action",
+      "description": "Run an action on a network: add_route, add_subnet, change_ip_range, change_protection, delete_route, or delete_subnet. `params` carries the action's body, e.g. {\"destination\":..,\"gateway\":..} for add_route or {\"ip_range\":..} for change_ip_range."
+    },
+    {
+      "name": "power_server",
+      "description": "Run a power action (poweron, poweroff, reboot, shutdown) on a server. poweroff, reboot, and shutdown all interrupt workloads running on the server. For rebuild, change_type, create_image, and other actions, use server_action."
+    },
+    {
+      "name": "primary_ip_action",
+      "description": "Run an action on a Primary IP: assign, unassign, change_dns_ptr, or change_protection."
+    },
+    {
+      "name": "server_action",
+      "description": "Run a server action: add_to_placement_group, attach_iso, attach_to_network, change_alias_ips, change_dns_ptr, change_protection, change_type, create_image, detach_from_network, detach_iso, disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, poweron, reboot, rebuild, remove_from_placement_group, request_console, reset, reset_password, shutdown. rebuild replaces the disk and destroys its data; create_image creates a BILLABLE snapshot; change_type requires the server powered off; reset is an ungraceful hard power cycle, not a clean reboot; for poweron/poweroff/reboot/shutdown use power_server. params carries the per-action request body (e.g. {\"image\": \"ubuntu-24.04\"} for rebuild); omit it for actions with no body."
+    },
+    {
+      "name": "update_certificate",
+      "description": "Update a certificate's name or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_firewall",
+      "description": "Update a firewall's name or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_floating_ip",
+      "description": "Update a Floating IP's description, labels, or name. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_image",
+      "description": "Update an image's description, type, or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_load_balancer",
+      "description": "Update a Load Balancer's name and/or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_network",
+      "description": "Update a network's name, labels, or vSwitch route exposure. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_placement_group",
+      "description": "Update a placement group's name or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_primary_ip",
+      "description": "Update a Primary IP's name, auto_delete flag, or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_server",
+      "description": "Update a server's name and/or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_ssh_key",
+      "description": "Update an SSH key's name or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_volume",
+      "description": "Update a volume's name or labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_zone",
+      "description": "Update a Zone's labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "update_zone_rrset",
+      "description": "Update an RRSet's labels. Labels replace the full existing set, not a merge."
+    },
+    {
+      "name": "volume_action",
+      "description": "Run a volume action: attach requires params {\"server\": <server_id>} (optional \"automount\"); resize requires params {\"size\": <new_size_gb>} and can only increase the size, which cannot be undone; detach and change_protection take no/optional params."
+    },
+    {
+      "name": "zone_action",
+      "description": "Run an action on a Zone. action must be one of: change_primary_nameservers, change_protection, change_ttl, import_zonefile."
+    },
+    {
+      "name": "zone_rrset_action",
+      "description": "Run an action on an RRSet: add_records, change_protection, change_ttl, remove_records, set_records, update_records. set_records OVERWRITES the record values; update_records updates record comments only; add_records auto-creates the RRSet if absent; remove_records auto-deletes it once it holds no records."
+    }
+  ],
+  "user_config": {
+    "hcloud_token": {
+      "type": "string",
+      "title": "Hetzner Cloud API Token",
+      "description": "A 64-character API token from your Hetzner Cloud project (Security -> API tokens). For several projects at once use \"name=<token>,name=<token>\".",
+      "required": true,
+      "sensitive": true
+    },
+    "hcloud_project": {
+      "type": "string",
+      "title": "Default project name (optional)",
+      "description": "Only meaningful with the multi-project token form: read-only tools then use this project when no project argument is given. Leave empty otherwise.",
+      "required": false,
+      "sensitive": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin"
+    ]
+  }
+}
