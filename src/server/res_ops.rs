@@ -1,4 +1,5 @@
-//! Image/ssh_key/volume/placement_group/certificate mutations (M15b, brief B24).
+//! Image/ssh_key/volume/placement_group/certificate mutations (M15b, brief B24;
+//! test-suite fixes B33).
 //!
 //! `IdArgs` and `UpdateNameLabelsArgs` are shared across tools with the same
 //! shape (delete-by-id; update name+labels) rather than one struct per tool,
@@ -46,15 +47,22 @@ pub(crate) struct IdArgs {
 
 /// Action name plus optional action-specific parameters, shared by every
 /// `*_action` tool - the allowed action set differs per tool, so validation
-/// stays in each tool body rather than on this shape.
+/// stays in each tool body rather than on this shape. `params` is a JSON
+/// object (not `serde_json::Value`), so a bare string or number can never
+/// become the POST body.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ActionArgs {
     /// Numeric ID of the resource to act on.
     pub id: u64,
     /// Action name; see the tool description for the allowed set.
     pub action: String,
-    /// Action-specific parameters, e.g. `{"delete": true}` for change_protection.
-    pub params: Option<serde_json::Value>,
+    /// Action-specific parameters object, e.g. `{"delete": true}` for change_protection.
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Turn an action's optional params object into a POST body - `{}` when unset.
+fn action_body(params: Option<serde_json::Map<String, serde_json::Value>>) -> serde_json::Value {
+    params.map_or_else(|| serde_json::json!({}), serde_json::Value::Object)
 }
 
 /// Body shared by every update tool that only ever sets `name`/`labels`
@@ -80,7 +88,7 @@ pub(crate) struct UpdateImageArgs {
     /// New description of the image.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Destination image type to convert to.
+    /// Destination image type to convert to; the only accepted value is "snapshot".
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
     /// Labels to set on the image (replaces existing labels).
@@ -115,7 +123,7 @@ pub(crate) struct CreateVolumeArgs {
 pub(crate) struct CreatePlacementGroupArgs {
     /// Name of the placement group.
     pub name: String,
-    /// Placement group type, e.g. "spread".
+    /// Placement group type; the only accepted value is "spread".
     #[serde(rename = "type")]
     pub r#type: String,
     /// Labels to attach to the placement group.
@@ -199,7 +207,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/images/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -278,8 +286,9 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Run a volume action (attach, detach, resize, change_protection). \
-        resize can only increase the size and cannot be undone.",
+        description = "Run a volume action: attach requires params {\"server\": <server_id>} \
+        (optional \"automount\"); resize requires params {\"size\": <new_size_gb>} and can only \
+        increase the size, which cannot be undone; detach and change_protection take no/optional params.",
         annotations(
             title = "Run volume action",
             read_only_hint = false,
@@ -296,7 +305,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/volumes/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -431,7 +440,7 @@ impl HcloudServer {
             self.client
                 .post(
                     &format!("/certificates/{}/actions/{}", args.id, args.action),
-                    args.params.unwrap_or_else(|| serde_json::json!({})),
+                    action_body(args.params),
                 )
                 .await,
         )
@@ -440,6 +449,8 @@ impl HcloudServer {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::ErrorCode;
     use wiremock::matchers::{body_json, method, path};
@@ -448,87 +459,247 @@ mod tests {
     use super::*;
     use crate::server::test_support::{server_for, tool_result_json};
 
-    #[tokio::test]
-    async fn update_image_sends_only_the_set_fields() {
-        let mock = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(path("/images/5"))
-            .and(body_json(serde_json::json!({"description": "renamed"})))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"image": {"id": 5}})),
-            )
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .update_image(Parameters(UpdateImageArgs {
-                id: 5,
-                description: Some("renamed".into()),
-                r#type: None,
-                labels: None,
-            }))
-            .await
-            .unwrap();
-        assert_eq!(
-            tool_result_json(&res),
-            serde_json::json!({"image": {"id": 5}})
-        );
+    fn map_of(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().expect("object literal").clone()
     }
 
-    #[tokio::test]
-    async fn delete_image_hits_the_id_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/images/5"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock)
+    /// Mount one row's mock (method/path/body), invoke `call`, and assert the
+    /// row's own distinct response. Every row uses a distinct id (so a
+    /// hardcoded-id mutation 404s), a distinct path (so a path-swap mutation
+    /// 404s), and a distinct response payload (so a mock mix-up fails the
+    /// `assert_eq!` even if two paths happened to collide).
+    async fn assert_binds_its_own_path<Fut>(
+        mock: &MockServer,
+        http_method: &str,
+        expected_path: &str,
+        expected_body: Option<serde_json::Value>,
+        response: serde_json::Value,
+        call: impl FnOnce() -> Fut,
+    ) where
+        Fut: Future<Output = Result<CallToolResult, ErrorData>>,
+    {
+        let mut builder = Mock::given(method(http_method)).and(path(expected_path));
+        if let Some(body) = expected_body {
+            builder = builder.and(body_json(body));
+        }
+        builder
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(mock)
             .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .delete_image(Parameters(IdArgs { id: 5 }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"success": true}));
+        let res = call().await.unwrap();
+        assert_eq!(tool_result_json(&res), response);
     }
 
+    /// F1/F3/F4: table-driven, one row per id-interpolating tool (12 tools;
+    /// volume_action gets a row per action, so 15 rows), all sharing one
+    /// MockServer. Each row's id/path/payload is unique, so a path-swap
+    /// (e.g. update_volume -> /ssh_keys/{id}) or a hardcoded-id regression in
+    /// ANY row 404s instead of silently matching a sibling row's mock.
     #[tokio::test]
-    async fn image_action_posts_the_action_path_with_params() {
+    async fn every_id_interpolating_tool_binds_its_own_path_and_id() {
         let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/images/5/actions/change_protection"))
-            .and(body_json(serde_json::json!({"delete": true})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
-
         let server = server_for(mock.uri());
-        let res = server
-            .image_action(Parameters(ActionArgs {
-                id: 5,
-                action: "change_protection".into(),
-                params: Some(serde_json::json!({"delete": true})),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
-    }
+        let row = |id: u64| serde_json::json!({"row": id});
 
-    #[tokio::test]
-    async fn image_action_rejects_unknown_actions_with_invalid_params() {
-        let server = server_for("http://127.0.0.1:9".to_string());
-        let err = server
-            .image_action(Parameters(ActionArgs {
-                id: 5,
-                action: "nuke".into(),
-                params: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert_binds_its_own_path(
+            &mock,
+            "PUT",
+            "/images/201",
+            Some(serde_json::json!({"description": "d"})),
+            row(201),
+            || {
+                server.update_image(Parameters(UpdateImageArgs {
+                    id: 201,
+                    description: Some("d".into()),
+                    r#type: None,
+                    labels: None,
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(&mock, "DELETE", "/images/202", None, row(202), || {
+            server.delete_image(Parameters(IdArgs { id: 202 }))
+        })
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "POST",
+            "/images/203/actions/change_protection",
+            Some(serde_json::json!({"delete": true})),
+            row(203),
+            || {
+                server.image_action(Parameters(ActionArgs {
+                    id: 203,
+                    action: "change_protection".into(),
+                    params: Some(map_of(serde_json::json!({"delete": true}))),
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "PUT",
+            "/ssh_keys/204",
+            Some(serde_json::json!({"name": "n"})),
+            row(204),
+            || {
+                server.update_ssh_key(Parameters(UpdateNameLabelsArgs {
+                    id: 204,
+                    name: Some("n".into()),
+                    labels: None,
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "PUT",
+            "/volumes/205",
+            Some(serde_json::json!({"name": "n"})),
+            row(205),
+            || {
+                server.update_volume(Parameters(UpdateNameLabelsArgs {
+                    id: 205,
+                    name: Some("n".into()),
+                    labels: None,
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(&mock, "DELETE", "/volumes/206", None, row(206), || {
+            server.delete_volume(Parameters(IdArgs { id: 206 }))
+        })
+        .await;
+
+        // volume_action: all four actions, each its own row/path.
+        assert_binds_its_own_path(
+            &mock,
+            "POST",
+            "/volumes/207/actions/attach",
+            Some(serde_json::json!({"server": 999})),
+            row(207),
+            || {
+                server.volume_action(Parameters(ActionArgs {
+                    id: 207,
+                    action: "attach".into(),
+                    params: Some(map_of(serde_json::json!({"server": 999}))),
+                }))
+            },
+        )
+        .await;
+        assert_binds_its_own_path(
+            &mock,
+            "POST",
+            "/volumes/208/actions/detach",
+            Some(serde_json::json!({})),
+            row(208),
+            || {
+                server.volume_action(Parameters(ActionArgs {
+                    id: 208,
+                    action: "detach".into(),
+                    params: None,
+                }))
+            },
+        )
+        .await;
+        assert_binds_its_own_path(
+            &mock,
+            "POST",
+            "/volumes/209/actions/resize",
+            Some(serde_json::json!({"size": 500})),
+            row(209),
+            || {
+                server.volume_action(Parameters(ActionArgs {
+                    id: 209,
+                    action: "resize".into(),
+                    params: Some(map_of(serde_json::json!({"size": 500}))),
+                }))
+            },
+        )
+        .await;
+        assert_binds_its_own_path(
+            &mock,
+            "POST",
+            "/volumes/210/actions/change_protection",
+            Some(serde_json::json!({"delete": true})),
+            row(210),
+            || {
+                server.volume_action(Parameters(ActionArgs {
+                    id: 210,
+                    action: "change_protection".into(),
+                    params: Some(map_of(serde_json::json!({"delete": true}))),
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "PUT",
+            "/placement_groups/211",
+            Some(serde_json::json!({"name": "n"})),
+            row(211),
+            || {
+                server.update_placement_group(Parameters(UpdateNameLabelsArgs {
+                    id: 211,
+                    name: Some("n".into()),
+                    labels: None,
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "DELETE",
+            "/placement_groups/212",
+            None,
+            row(212),
+            || server.delete_placement_group(Parameters(IdArgs { id: 212 })),
+        )
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "PUT",
+            "/certificates/213",
+            Some(serde_json::json!({"name": "n"})),
+            row(213),
+            || {
+                server.update_certificate(Parameters(UpdateNameLabelsArgs {
+                    id: 213,
+                    name: Some("n".into()),
+                    labels: None,
+                }))
+            },
+        )
+        .await;
+
+        assert_binds_its_own_path(&mock, "DELETE", "/certificates/214", None, row(214), || {
+            server.delete_certificate(Parameters(IdArgs { id: 214 }))
+        })
+        .await;
+
+        assert_binds_its_own_path(
+            &mock,
+            "POST",
+            "/certificates/215/actions/retry",
+            Some(serde_json::json!({})),
+            row(215),
+            || {
+                server.certificate_action(Parameters(ActionArgs {
+                    id: 215,
+                    action: "retry".into(),
+                    params: None,
+                }))
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -604,61 +775,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_volume_hits_the_id_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/volumes/3"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .delete_volume(Parameters(IdArgs { id: 3 }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"success": true}));
-    }
-
-    #[tokio::test]
-    async fn volume_action_posts_the_action_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/volumes/3/actions/resize"))
-            .and(body_json(serde_json::json!({"size": 100})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .volume_action(Parameters(ActionArgs {
-                id: 3,
-                action: "resize".into(),
-                params: Some(serde_json::json!({"size": 100})),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
-    }
-
-    #[tokio::test]
-    async fn volume_action_rejects_unknown_actions_with_invalid_params() {
-        let server = server_for("http://127.0.0.1:9".to_string());
-        let err = server
-            .volume_action(Parameters(ActionArgs {
-                id: 3,
-                action: "nuke".into(),
-                params: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-    }
-
-    #[tokio::test]
     async fn create_placement_group_sends_exactly_the_required_fields_when_optionals_are_unset() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
@@ -685,23 +801,6 @@ mod tests {
             tool_result_json(&res),
             serde_json::json!({"placement_group": {"id": 1}})
         );
-    }
-
-    #[tokio::test]
-    async fn delete_placement_group_hits_the_id_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/placement_groups/4"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .delete_placement_group(Parameters(IdArgs { id: 4 }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"success": true}));
     }
 
     #[tokio::test]
@@ -768,101 +867,55 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn delete_certificate_hits_the_id_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/certificates/6"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .delete_certificate(Parameters(IdArgs { id: 6 }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"success": true}));
+    /// F2: pins each allowlist to its exact expected array (via `.to_vec()`
+    /// so an appended/dropped element fails at runtime, not just diverges by
+    /// silently changing the const's inferred length).
+    #[test]
+    fn action_allowlists_are_pinned_to_their_exact_expected_sets() {
+        assert_eq!(IMAGE_ACTIONS.to_vec(), vec!["change_protection"]);
+        assert_eq!(
+            VOLUME_ACTIONS.to_vec(),
+            vec!["attach", "detach", "resize", "change_protection"]
+        );
+        assert_eq!(CERTIFICATE_ACTIONS.to_vec(), vec!["retry"]);
     }
 
+    /// F2: cross-rejection - each tool must reject an action that's valid on
+    /// a *different* resource, proving the allowlist check is resource-exact
+    /// rather than "is this a known action anywhere".
     #[tokio::test]
-    async fn certificate_action_posts_the_action_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/certificates/6/actions/retry"))
-            .and(body_json(serde_json::json!({})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .certificate_action(Parameters(ActionArgs {
-                id: 6,
-                action: "retry".into(),
-                params: None,
-            }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
-    }
-
-    #[tokio::test]
-    async fn certificate_action_rejects_unknown_actions_with_invalid_params() {
+    async fn action_tools_reject_actions_that_only_belong_to_a_sibling_resource() {
         let server = server_for("http://127.0.0.1:9".to_string());
+
         let err = server
-            .certificate_action(Parameters(ActionArgs {
-                id: 6,
-                action: "nuke".into(),
+            .image_action(Parameters(ActionArgs {
+                id: 1,
+                action: "attach".into(),
                 params: None,
             }))
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-    }
 
-    /// Table-driven: the four `{id, name?, labels?}` update tools share
-    /// `UpdateNameLabelsArgs` - one row per tool proves each hits its own
-    /// path with an id-free body, since the shared struct makes a copy/paste
-    /// path bug (e.g. update_volume PUTing to /ssh_keys/{id}) easy to miss.
-    #[tokio::test]
-    async fn update_name_labels_tools_hit_their_own_path_with_an_id_free_body() {
-        let mock = MockServer::start().await;
-        for path_str in [
-            "/ssh_keys/10",
-            "/volumes/10",
-            "/placement_groups/10",
-            "/certificates/10",
-        ] {
-            Mock::given(method("PUT"))
-                .and(path(path_str))
-                .and(body_json(serde_json::json!({"name": "renamed"})))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
-                )
-                .mount(&mock)
-                .await;
-        }
+        let err = server
+            .volume_action(Parameters(ActionArgs {
+                id: 1,
+                action: "retry".into(),
+                params: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
 
-        let server = server_for(mock.uri());
-        let args = || UpdateNameLabelsArgs {
-            id: 10,
-            name: Some("renamed".into()),
-            labels: None,
-        };
-        for res in [
-            server.update_ssh_key(Parameters(args())).await.unwrap(),
-            server.update_volume(Parameters(args())).await.unwrap(),
-            server
-                .update_placement_group(Parameters(args()))
-                .await
-                .unwrap(),
-            server.update_certificate(Parameters(args())).await.unwrap(),
-        ] {
-            assert_eq!(tool_result_json(&res), serde_json::json!({"ok": true}));
-        }
+        let err = server
+            .certificate_action(Parameters(ActionArgs {
+                id: 1,
+                action: "change_protection".into(),
+                params: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[test]
@@ -886,6 +939,7 @@ mod tests {
             ("certificate_action", false, false),
         ];
         assert_eq!(router.list_all().len(), 15);
+        let mut titles = std::collections::HashSet::new();
         for (name, read_only, destructive) in expected {
             let tool = router
                 .get(name)
@@ -904,6 +958,42 @@ mod tests {
                 Some(destructive),
                 "{name} must be destructive_hint = {destructive}"
             );
+            // F7: every tool is open-world (talks to the real Hetzner API),
+            // and carries a distinct, non-empty title.
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(true),
+                "{name} must be open_world_hint = true"
+            );
+            let title = annotations
+                .title
+                .clone()
+                .unwrap_or_else(|| panic!("{name} has no title"));
+            assert!(!title.is_empty(), "{name} title must not be empty");
+            if let Some(base) = name.strip_prefix("update_") {
+                assert!(
+                    title.starts_with("Update"),
+                    "{name} (updates {base}) title {title:?} must start with \"Update\""
+                );
+            }
+            assert!(
+                titles.insert(title.clone()),
+                "title {title:?} reused by more than one tool"
+            );
         }
+        assert_eq!(titles.len(), 15, "every tool must have a distinct title");
+
+        // F6: create_volume's BILLABLE warning must actually be present, not
+        // just written once and left to bit-rot unasserted.
+        let create_volume_description = router
+            .get("create_volume")
+            .unwrap()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            create_volume_description.contains("BILLABLE"),
+            "create_volume description must warn BILLABLE, got: {create_volume_description}"
+        );
     }
 }
