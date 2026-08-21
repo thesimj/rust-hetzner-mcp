@@ -16,7 +16,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, PageArgs, pagination_query, push_param, respond};
+use super::{HcloudServer, IdArgs, PageArgs, check_action, pagination_query, push_param, respond};
 
 const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
 
@@ -46,6 +46,29 @@ pub(crate) struct CreateServerFirewall {
     pub firewall: u64,
 }
 
+/// Public network options per the spec's `public_net` sub-schema
+/// (cloud.spec.json paths./servers.post.requestBody...properties.public_net):
+/// every field optional, enable_ipv4/enable_ipv6 default true server-side.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct CreateServerPublicNet {
+    /// Attach an IPv4 on the public NIC; defaults to true. If false, no IPv4
+    /// address is attached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_ipv4: Option<bool>,
+    /// Attach an IPv6 on the public NIC; defaults to true. If false, no IPv6
+    /// address is attached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_ipv6: Option<bool>,
+    /// ID of an existing ipv4 Primary IP to use. If omitted and enable_ipv4
+    /// is true, a new (billed) ipv4 Primary IP is created automatically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4: Option<u64>,
+    /// ID of an existing ipv6 Primary IP to use. If omitted and enable_ipv6
+    /// is true, a new ipv6 Primary IP is created automatically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv6: Option<u64>,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct CreateServerArgs {
     /// Name for the new server.
@@ -69,11 +92,10 @@ pub(crate) struct CreateServerArgs {
     /// Whether to start the server right after creation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_after_create: Option<bool>,
-    /// Public network options, e.g. {"enable_ipv4": true, "enable_ipv6": true}.
-    /// enable_ipv4 defaults to true and, unless an existing `ipv4` Primary IP
-    /// is given, creates and bills a new one; forwarded to the API as-is.
+    /// Public network options. enable_ipv4 defaults to true and, unless an
+    /// existing `ipv4` Primary IP is given, creates and bills a new one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub public_net: Option<serde_json::Value>,
+    pub public_net: Option<CreateServerPublicNet>,
     /// Network IDs to attach the server's private network interface to at creation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub networks: Option<Vec<u64>>,
@@ -112,6 +134,8 @@ pub(crate) struct ListImagesArgs {
     pub bound_to: Option<Vec<String>>,
     /// Include deprecated images in the results.
     pub include_deprecated: Option<bool>,
+    /// Filter by CPU architecture: "x86" or "arm".
+    pub architecture: Option<String>,
     /// Exact image name to filter by.
     pub name: Option<String>,
     /// Label selector, e.g. "env=prod".
@@ -248,16 +272,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<PowerServerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if !POWER_ACTIONS.contains(&args.action.as_str()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "action must be one of {}, got {:?}",
-                    POWER_ACTIONS.join(", "),
-                    args.action
-                ),
-                None,
-            ));
-        }
+        check_action(&POWER_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -283,10 +298,15 @@ impl HcloudServer {
     ) -> Result<CallToolResult, ErrorData> {
         let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "type", args.r#type);
+        push_param(&mut query, "architecture", args.architecture);
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
-        if let Some(true) = args.include_deprecated {
-            push_param(&mut query, "include_deprecated", Some("true".to_string()));
+        if let Some(include_deprecated) = args.include_deprecated {
+            push_param(
+                &mut query,
+                "include_deprecated",
+                Some(include_deprecated.to_string()),
+            );
         }
         for status in args.status.into_iter().flatten() {
             push_param(&mut query, "status", Some(status));
@@ -605,7 +625,12 @@ mod tests {
                 user_data: None,
                 labels: Some(labels),
                 start_after_create: Some(false),
-                public_net: Some(serde_json::json!({"enable_ipv4": true, "enable_ipv6": false})),
+                public_net: Some(CreateServerPublicNet {
+                    enable_ipv4: Some(true),
+                    enable_ipv6: Some(false),
+                    ipv4: None,
+                    ipv6: None,
+                }),
                 networks: Some(vec![42]),
                 firewalls: Some(vec![CreateServerFirewall { firewall: 7 }]),
                 volumes: Some(vec![99]),
@@ -697,6 +722,7 @@ mod tests {
                 status: None,
                 bound_to: None,
                 include_deprecated: None,
+                architecture: None,
                 name: None,
                 label_selector: None,
                 page: None,
@@ -734,8 +760,77 @@ mod tests {
                 status: Some(vec!["available".into()]),
                 bound_to: Some(vec!["5".into()]),
                 include_deprecated: Some(true),
+                architecture: None,
                 name: Some("ubuntu-24.04".into()),
                 label_selector: Some("env=prod".into()),
+                page: None,
+                per_page: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"images": []}));
+    }
+
+    /// D3 item 10: `include_deprecated: false` must reach the wire too, not
+    /// only `true` (matches list_isos' include_architecture_wildcard pattern).
+    #[tokio::test]
+    async fn list_images_forwards_include_deprecated_false() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/images"))
+            .and(query_param("include_deprecated", "false"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"images": []})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .list_images(Parameters(ListImagesArgs {
+                r#type: None,
+                sort: None,
+                status: None,
+                bound_to: None,
+                include_deprecated: Some(false),
+                architecture: None,
+                name: None,
+                label_selector: None,
+                page: None,
+                per_page: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"images": []}));
+    }
+
+    /// D3 item 11: list_images' last missing spec filter. Note: the spec
+    /// types `architecture` as a single string (enum x86/arm), not an
+    /// array like sort/status - verified against cloud.spec.json
+    /// paths./images.get.parameters[architecture].schema.
+    #[tokio::test]
+    async fn list_images_passes_the_architecture_filter() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/images"))
+            .and(query_param("architecture", "arm"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"images": []})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .list_images(Parameters(ListImagesArgs {
+                r#type: None,
+                sort: None,
+                status: None,
+                bound_to: None,
+                include_deprecated: None,
+                architecture: Some("arm".into()),
+                name: None,
+                label_selector: None,
                 page: None,
                 per_page: None,
             }))
@@ -791,6 +886,32 @@ mod tests {
             tool_result_json(&res),
             serde_json::json!({"server_types": []})
         );
+    }
+
+    /// D3 item 8: zero-HTTP proof that pagination bounds are enforced before
+    /// any request is built - `.expect(0)` fails the test if the mock is hit
+    /// at all, not just if a *different* mock would have matched.
+    #[tokio::test]
+    async fn list_server_types_rejects_page_zero_without_any_request() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"server_types": []})),
+            )
+            .expect(0)
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let err = server
+            .list_server_types(Parameters(PageArgs {
+                page: Some(0),
+                per_page: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -1003,6 +1124,31 @@ mod tests {
             "automount",
         ] {
             assert!(props.contains_key(field), "missing {field}: {props:?}");
+        }
+    }
+
+    /// D3 item 7: public_net is a typed struct now, not a passthrough
+    /// `serde_json::Value` - its four spec fields (cloud.spec.json
+    /// paths./servers.post.requestBody...properties.public_net) must be
+    /// wire-visible in the schema, not just accepted at deserialize time.
+    #[test]
+    fn create_server_public_net_schema_has_the_four_spec_fields() {
+        let router = super::HcloudServer::compute_router();
+        let schema = &router.get("create_server").unwrap().input_schema;
+        // An `Option<Struct>` field schemarizes as `anyOf: [{$ref}, {type: null}]`.
+        let public_net_ref = schema["properties"]["public_net"]["anyOf"][0]["$ref"]
+            .as_str()
+            .expect("public_net should anyOf-wrap a $ref to its own schema")
+            .strip_prefix("#/$defs/")
+            .expect("$ref should point into $defs");
+        let public_net_props = schema["$defs"][public_net_ref]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("missing $defs/{public_net_ref}: {schema:?}"));
+        for field in ["enable_ipv4", "enable_ipv6", "ipv4", "ipv6"] {
+            assert!(
+                public_net_props.contains_key(field),
+                "missing {field}: {public_net_props:?}"
+            );
         }
     }
 

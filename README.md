@@ -171,7 +171,7 @@ object; the allowed actions are noted after each.
 - `server_action` - run a server action. **Destructive.** Actions: add_to_placement_group, attach_iso, attach_to_network, change_alias_ips, change_dns_ptr, change_protection, change_type, create_image, detach_from_network, detach_iso, disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, poweron, reboot, rebuild, remove_from_placement_group, request_console, reset, reset_password, shutdown (23 total; poweron/poweroff/reboot/shutdown are also available via `power_server`)
 
 **Images**
-- `list_images` - list images, filterable by type, sort, status, bound_to, include_deprecated, name, or label selector
+- `list_images` - list images, filterable by type, sort, status, bound_to, include_deprecated, architecture, name, or label selector
 - `get_image` - get an image by ID
 - `update_image` - update an image's description, type, or labels
 - `delete_image` - delete an image (snapshot or backup) permanently. **Destructive**
