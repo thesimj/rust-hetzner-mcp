@@ -470,7 +470,10 @@ pub(crate) fn respond(result: anyhow::Result<Value>) -> Result<CallToolResult, E
 /// Standard `page`/`per_page` query pair, omitting unset values. Validates
 /// `page >= 1` and `1 <= per_page <= 50` at runtime (W3.4) - the schema's
 /// `#[schemars(range(...))]` is only a client-facing hint, not enforced by
-/// deserialization (see `inject_project_property`'s doc comment).
+/// deserialization (see `inject_project_property`'s doc comment). The 50 cap
+/// is the spec's global pagination default ("the maximum value is 50 except
+/// otherwise specified in the documentation") - every list endpoint in this
+/// crate, including zone rrsets, falls under that default.
 pub(crate) fn pagination_query(
     page: Option<u32>,
     per_page: Option<u32>,
@@ -484,15 +487,6 @@ pub(crate) fn pagination_query(
             None,
         ));
     }
-    Ok(raw_pagination_query(page, per_page))
-}
-
-/// `page`/`per_page` query pair with no bounds check - only for
-/// `list_zone_rrsets`, whose `per_page` the spec declares with no maximum.
-pub(crate) fn raw_pagination_query(
-    page: Option<u32>,
-    per_page: Option<u32>,
-) -> Vec<(&'static str, String)> {
     let mut query = Vec::new();
     if let Some(page) = page {
         query.push(("page", page.to_string()));
@@ -500,7 +494,7 @@ pub(crate) fn raw_pagination_query(
     if let Some(per_page) = per_page {
         query.push(("per_page", per_page.to_string()));
     }
-    query
+    Ok(query)
 }
 
 /// Push an optional string query param, skipping `None` AND empty strings -
@@ -709,16 +703,6 @@ mod tests {
         assert!(pagination_query(None, None).is_ok());
     }
 
-    /// W3.4: `raw_pagination_query` (list_zone_rrsets only) enforces no
-    /// upper bound on `per_page`, matching the spec's declared maximum.
-    #[test]
-    fn raw_pagination_query_has_no_upper_bound() {
-        assert_eq!(
-            raw_pagination_query(Some(1), Some(500)),
-            vec![("page", "1".into()), ("per_page", "500".into())]
-        );
-    }
-
     /// Crate-wide: every tool must carry all three hints and a distinct,
     /// non-empty title, whatever its router pins locally.
     #[test]
@@ -791,6 +775,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
+    }
+
+    /// D2 finding 2: the committed mcpb/manifest.json's `tools` array is
+    /// generated from a live binary (`scripts/build-mcpb.mjs --sync-manifest`)
+    /// rather than hand-copied, but nothing enforced it stays in sync when a
+    /// tool description changes afterwards - this closes that gap. Also
+    /// pins that the generator's single-project dump never leaks the
+    /// multi-project `project` schema property into the committed file.
+    #[test]
+    fn mcpb_manifest_tools_match_the_router_names_and_descriptions() {
+        let manifest_json =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/mcpb/manifest.json"))
+                .expect("mcpb/manifest.json must be readable");
+        let manifest: Value = serde_json::from_str(&manifest_json).unwrap();
+        let manifest_tools = manifest["tools"].as_array().expect("tools array");
+
+        let server = test_support::dead_server();
+        let router_tools = server.tool_router.list_all();
+        assert_eq!(
+            manifest_tools.len(),
+            router_tools.len(),
+            "manifest tool count has drifted from the router"
+        );
+
+        let mut router_by_name = std::collections::BTreeMap::new();
+        for t in &router_tools {
+            let props = t.input_schema["properties"].as_object().unwrap();
+            assert!(
+                !props.contains_key("project"),
+                "{}: single-project manifest generation must not carry a project property",
+                t.name
+            );
+            router_by_name.insert(
+                t.name.as_ref(),
+                t.description.as_deref().unwrap_or_default(),
+            );
+        }
+
+        for entry in manifest_tools {
+            let name = entry["name"].as_str().expect("tool name");
+            let description = entry["description"].as_str().expect("tool description");
+            let expected = router_by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("manifest names an unknown tool: {name}"));
+            assert_eq!(
+                description, *expected,
+                "{name}: manifest description has drifted from the router - \
+                 run `node scripts/build-mcpb.mjs --sync-manifest` and commit"
+            );
+        }
     }
 
     #[test]

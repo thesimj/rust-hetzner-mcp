@@ -13,6 +13,10 @@
 // via lipo when both targets are installed; otherwise the native arch is used.
 //
 // Usage:  node scripts/build-mcpb.mjs
+//         node scripts/build-mcpb.mjs --sync-manifest   (refresh mcpb/manifest.json's
+//                                                         tools + version from a live
+//                                                         debug build; run + commit
+//                                                         whenever a tool description changes)
 // Requires: cargo, node/npx. macOS universal builds also need lipo (Xcode CLT).
 
 import { execFileSync } from "node:child_process";
@@ -60,6 +64,61 @@ function crateVersion() {
   return m[1];
 }
 
+// D2 finding 2: regenerate the committed manifest's `tools` array + `version`
+// from a live binary instead of hand-copying tool descriptions, which drifts
+// the moment a tool's description changes. Run via `--sync-manifest`; not
+// part of the per-platform release build below (same tool list on every
+// platform, so redoing it 3x in CI would be pure waste).
+function toolsFromLiveBinary() {
+  console.log("==> Building a debug binary to introspect tools");
+  run("cargo", ["build", "--locked"]);
+  const binPath = join(ROOT, "target", "debug", `${BIN_NAME}${platform.exe}`);
+  // Synthetic - never a real token - and single-project, so no `project`
+  // schema property leaks into the committed tool descriptions.
+  const token = "a".repeat(64);
+  const requests =
+    [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2026-07-28",
+          capabilities: {},
+          clientInfo: { name: "mcpb-manifest-sync", version: "0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ]
+      .map((m) => JSON.stringify(m))
+      .join("\n") + "\n";
+  const output = execFileSync(binPath, [], {
+    cwd: ROOT,
+    input: requests,
+    env: { ...process.env, HCLOUD_TOKEN: token },
+    encoding: "utf8",
+  });
+  const listResult = output
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((msg) => msg.id === 2)?.result;
+  if (!listResult) throw new Error("binary did not answer tools/list on stdio");
+  return listResult.tools
+    .map((t) => ({ name: t.name, description: t.description }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function syncManifest() {
+  const manifestPath = join(ROOT, "mcpb", "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.tools = toolsFromLiveBinary();
+  manifest.version = crateVersion();
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  console.log(`==> mcpb/manifest.json synced: ${manifest.tools.length} tools, v${manifest.version}`);
+}
+
 // Build the release binary for the host. On macOS, attempt a universal binary.
 function buildBinary(stageBinDir) {
   const out = join(stageBinDir, `${BIN_NAME}${platform.exe}`);
@@ -101,17 +160,12 @@ function main() {
   mkdirSync(stageBinDir, { recursive: true });
   mkdirSync(distDir, { recursive: true });
 
-  // Patch the committed base manifest for this target.
+  // Patch the committed base manifest for this target. Keeping it fresh
+  // (tools + version) is `--sync-manifest`'s job, not this build's (W3.7,
+  // D2 finding 2) - entry_point/command/platforms below are per-target and
+  // stay in the staged copy only.
   const manifestPath = join(ROOT, "mcpb", "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-
-  // Keep the committed manifest.json's version in sync with Cargo.toml, so the
-  // git copy never drifts stale between releases (W3.7). Only `version` - the
-  // per-target entry_point/command/platforms below stay in the staged copy only.
-  if (manifest.version !== version) {
-    writeFileSync(manifestPath, JSON.stringify({ ...manifest, version }, null, 2) + "\n");
-  }
-
   manifest.version = version;
   manifest.server.entry_point = `bin/${BIN_NAME}${platform.exe}`;
   manifest.server.mcp_config.command = `\${__dirname}/bin/${BIN_NAME}${platform.exe}`;
@@ -133,4 +187,8 @@ function main() {
   console.log(`==> Done: ${outFile}`);
 }
 
-main();
+if (process.argv.includes("--sync-manifest")) {
+  syncManifest();
+} else {
+  main();
+}

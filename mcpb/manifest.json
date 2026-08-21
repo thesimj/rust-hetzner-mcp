@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "hetzner-mcp",
   "display_name": "Hetzner Cloud",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Manage Hetzner Cloud from Claude: servers, volumes, networks, firewalls, Load Balancers, DNS Zones, and more.",
   "long_description": "A single Rust binary that exposes the Hetzner Cloud API to Claude over MCP: 93 tools covering servers, images, volumes, networks, firewalls, Floating and Primary IPs, Load Balancers, certificates, SSH keys, placement groups, and DNS Zones. Every tool is safety-annotated (read-only vs mutating), results are plain JSON, and one HCLOUD_TOKEN can hold several projects' tokens (\"prod=<token>,staging=<token>\") with per-call project routing and a list_projects discovery tool. Bring your own Hetzner API token.",
   "author": {
@@ -45,7 +45,7 @@
     },
     {
       "name": "create_certificate",
-      "description": "Upload a certificate, or request a managed Let's Encrypt certificate."
+      "description": "Upload a certificate, or request a managed Let's Encrypt certificate. type defaults to uploaded; type \"uploaded\" requires certificate and private_key; type \"managed\" requires domain_names."
     },
     {
       "name": "create_firewall",
@@ -53,7 +53,7 @@
     },
     {
       "name": "create_floating_ip",
-      "description": "Create a Floating IP. This creates a BILLABLE resource."
+      "description": "Create a Floating IP. This creates a BILLABLE resource. home_location is required unless server is given."
     },
     {
       "name": "create_load_balancer",
@@ -69,11 +69,11 @@
     },
     {
       "name": "create_primary_ip",
-      "description": "Create a Primary IP. This creates a BILLABLE resource."
+      "description": "Create a Primary IP. This creates a BILLABLE resource. location is required unless assignee_id is given."
     },
     {
       "name": "create_server",
-      "description": "Create a new server. This creates a BILLABLE resource. The response contains the root_password exactly once - it is not retrievable afterwards."
+      "description": "Create a new server. This creates a BILLABLE resource. public_net's enable_ipv4 defaults to true and, unless public_net.ipv4 names an existing Primary IP, creates and bills a new one; set enable_ipv4 to false to skip it. The response contains the root_password exactly once - it is not retrievable afterwards."
     },
     {
       "name": "create_ssh_key",
@@ -81,7 +81,7 @@
     },
     {
       "name": "create_volume",
-      "description": "Create a new block storage volume. This creates a BILLABLE resource."
+      "description": "Create a new block storage volume. This creates a BILLABLE resource. location is required unless server is given (the volume is then created in that server's location)."
     },
     {
       "name": "create_zone",
@@ -345,7 +345,7 @@
     },
     {
       "name": "server_action",
-      "description": "Run a server action: add_to_placement_group, attach_iso, attach_to_network, change_alias_ips, change_dns_ptr, change_protection, change_type, create_image, detach_from_network, detach_iso, disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, poweron, reboot, rebuild, remove_from_placement_group, request_console, reset, reset_password, shutdown. rebuild replaces the disk and destroys its data; create_image creates a BILLABLE snapshot; change_type requires the server powered off; reset is an ungraceful hard power cycle, not a clean reboot; for poweron/poweroff/reboot/shutdown use power_server. params carries the per-action request body (e.g. {\"image\": \"ubuntu-24.04\"} for rebuild); omit it for actions with no body."
+      "description": "Run a server action: add_to_placement_group, attach_iso, attach_to_network, change_alias_ips, change_dns_ptr, change_protection, change_type, create_image, detach_from_network, detach_iso, disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, poweron, reboot, rebuild, remove_from_placement_group, request_console, reset, reset_password, shutdown. rebuild replaces the disk and destroys its data; create_image creates a BILLABLE snapshot; enable_backup is BILLABLE - it raises the server's price by 20%; reset_password returns a new root_password exactly once - it is not retrievable afterwards; change_type requires the server powered off; reset is an ungraceful hard power cycle, not a clean reboot; for poweron/poweroff/reboot/shutdown use power_server. params carries the per-action request body (e.g. {\"image\": \"ubuntu-24.04\"} for rebuild); omit it for actions with no body."
     },
     {
       "name": "update_certificate",
