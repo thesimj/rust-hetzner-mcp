@@ -10,6 +10,9 @@ use serde_json::Value;
 
 const BASE_URL: &str = "https://api.hetzner.cloud/v1";
 const MAX_ERROR_BODY_CHARS: usize = 500;
+/// Hard cap on a decoded response body; Hetzner responses are small JSON
+/// envelopes, so anything past this is a misbehaving peer, not real data.
+const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Authenticated client for one Hetzner Cloud project.
 #[derive(Clone)]
@@ -24,7 +27,7 @@ impl HcloudClient {
     /// URL override, same convention as the official hcloud CLI) or the real
     /// API. The caller resolves `HCLOUD_TOKEN` (single- or multi-project).
     pub fn from_env(token: impl Into<String>) -> Result<Self> {
-        Self::new(endpoint(std::env::var("HCLOUD_ENDPOINT").ok()), token)
+        Self::new(endpoint(std::env::var("HCLOUD_ENDPOINT").ok())?, token)
     }
 
     /// Clone this client with a different project's token, sharing the same
@@ -43,6 +46,8 @@ impl HcloudClient {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(120))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .context(
                 "failed to build the HTTP client - is a platform TLS trust store available?",
@@ -76,15 +81,22 @@ impl HcloudClient {
 
     /// Ids are typed u64 at the tool layer; this guards the shared layer
     /// anyway - reqwest's Url normalizes "..", which would escape /v1.
+    /// '%' is rejected too: a caller-controlled percent-escape could decode
+    /// into any of the other rejected characters after the URL is built.
     fn url(&self, path: &str) -> Result<String> {
-        if path.contains("..") || path.contains('?') || path.contains('#') {
+        if !path.starts_with('/')
+            || path.contains("..")
+            || path.contains('?')
+            || path.contains('#')
+            || path.contains('%')
+        {
             bail!("invalid API path: {path}");
         }
         Ok(format!("{}{path}", self.base_url))
     }
 
     async fn send(&self, req: reqwest::RequestBuilder, path: &str) -> Result<Value> {
-        let resp = req
+        let mut resp = req
             .bearer_auth(&self.token)
             .send()
             .await
@@ -95,10 +107,21 @@ impl HcloudClient {
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .map(String::from);
-        let body = resp
-            .text()
+        // Stream chunks rather than buffering via `.text()`, so a body past
+        // the cap is caught before it's fully read into memory.
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .with_context(|| format!("reading the response body from {path} failed"))?;
+            .with_context(|| format!("reading the response body from {path} failed"))?
+        {
+            if bytes.len() + chunk.len() > MAX_BODY_BYTES {
+                bail!("response body from {path} exceeds the {MAX_BODY_BYTES}-byte limit");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body = String::from_utf8(bytes)
+            .with_context(|| format!("the response from {path} is not valid UTF-8"))?;
         if !status.is_success() {
             let hint = retry_after
                 .map(|s| format!(" (Retry-After: {s})"))
@@ -118,13 +141,38 @@ impl HcloudClient {
     }
 }
 
-/// The effective base URL: a non-empty `HCLOUD_ENDPOINT` wins, else the
-/// real API.
-fn endpoint(env_value: Option<String>) -> String {
-    env_value
+/// The effective base URL: a non-empty `HCLOUD_ENDPOINT` wins (after
+/// rejecting a non-https, non-loopback override), else the real API.
+fn endpoint(env_value: Option<String>) -> Result<String> {
+    let Some(v) = env_value
         .map(|v| v.trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| BASE_URL.to_string())
+    else {
+        return Ok(BASE_URL.to_string());
+    };
+    if !v.starts_with("https://") && !is_loopback_http(&v) {
+        bail!(
+            "HCLOUD_ENDPOINT must use https:// (or http:// to 127.0.0.1/::1/localhost), got: {v}"
+        );
+    }
+    Ok(v)
+}
+
+/// Whether `v` is an `http://` URL whose host is a loopback address - the
+/// only case a plaintext `HCLOUD_ENDPOINT` override is allowed (wiremock in
+/// tests; `HcloudClient::new` itself stays scheme-agnostic for the same reason).
+fn is_loopback_http(v: &str) -> bool {
+    let Some(rest) = v.strip_prefix("http://") else {
+        return false;
+    };
+    // A bracketed IPv6 literal (e.g. "[::1]:1/v1") contains ':' itself, so it
+    // must be extracted before splitting the host from an optional port.
+    let host = if let Some(inner) = rest.strip_prefix('[') {
+        inner.split(']').next().unwrap_or("")
+    } else {
+        rest.split(['/', ':']).next().unwrap_or("")
+    };
+    host == "127.0.0.1" || host == "::1" || host == "localhost"
 }
 
 /// `{"error": {"code", "message", "details"?}}` -> "code: message (details)";
@@ -156,16 +204,37 @@ mod tests {
 
     #[test]
     fn endpoint_defaults_to_the_real_api_and_honours_a_non_empty_override() {
-        assert_eq!(endpoint(None), BASE_URL);
-        assert_eq!(endpoint(Some(String::new())), BASE_URL);
+        assert_eq!(endpoint(None).unwrap(), BASE_URL);
+        assert_eq!(endpoint(Some(String::new())).unwrap(), BASE_URL);
         assert_eq!(
-            endpoint(Some("http://127.0.0.1:1/v1".into())),
+            endpoint(Some("https://internal.example/v1".into())).unwrap(),
+            "https://internal.example/v1"
+        );
+        assert_eq!(
+            endpoint(Some("http://127.0.0.1:1/v1".into())).unwrap(),
             "http://127.0.0.1:1/v1"
         );
         assert_eq!(
-            endpoint(Some("http://127.0.0.1:1/v1/".into())),
+            endpoint(Some("http://127.0.0.1:1/v1/".into())).unwrap(),
             "http://127.0.0.1:1/v1"
         );
+        assert_eq!(
+            endpoint(Some("http://localhost:1/v1".into())).unwrap(),
+            "http://localhost:1/v1"
+        );
+        assert_eq!(
+            endpoint(Some("http://[::1]:1/v1".into())).unwrap(),
+            "http://[::1]:1/v1"
+        );
+    }
+
+    /// W2.3: a plaintext, non-loopback override is rejected - the env is
+    /// trusted, but a typo'd `http://` should not silently ship credentials
+    /// in the clear to some other host.
+    #[test]
+    fn endpoint_rejects_a_non_https_non_loopback_override() {
+        let err = endpoint(Some("http://api.hetzner.cloud/v1".into())).unwrap_err();
+        assert!(err.to_string().contains("https://"), "got: {err}");
     }
 
     #[test]
@@ -236,13 +305,56 @@ mod tests {
     async fn traversal_paths_are_rejected_before_any_request() {
         // Base URL points nowhere; the guard must fire before a connection.
         let client = HcloudClient::new("http://127.0.0.1:9", "test-token").unwrap();
-        for bad in ["/ssh_keys/../servers/42", "/servers?admin=1", "/a#frag"] {
+        for bad in [
+            "/ssh_keys/../servers/42",
+            "/servers?admin=1",
+            "/a#frag",
+            "/a%2e%2e/b",
+            "servers",
+        ] {
             let err = client.get(bad, &[]).await.unwrap_err();
             assert!(
                 err.to_string().contains("invalid API path"),
                 "path {bad} got: {err}"
             );
         }
+    }
+
+    /// W2.2: a response body past the cap is rejected instead of being
+    /// buffered in full - proven with a body just one byte over the limit.
+    #[tokio::test]
+    async fn response_bodies_past_the_cap_are_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(vec![b'a'; MAX_BODY_BYTES + 1], "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
+        let err = client.get("/servers", &[]).await.unwrap_err();
+        assert!(err.to_string().contains("byte limit"), "got: {err}");
+    }
+
+    /// W2.2: Hetzner never redirects, so the client must not silently follow
+    /// one - a redirect response is surfaced as its raw (non-success) status.
+    #[tokio::test]
+    async fn redirects_are_not_followed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", "https://evil.example/steal"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
+        let err = client.get("/servers", &[]).await.unwrap_err();
+        assert!(err.to_string().contains("307"), "got: {err}");
     }
 
     #[tokio::test]

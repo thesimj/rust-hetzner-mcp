@@ -72,6 +72,10 @@ jobs:
         with:
           node-version: 22
 
+      # A red test suite must never reach a tagged release's shipped binary.
+      - name: Run tests
+        run: cargo test --locked
+
       - name: Build and pack .mcpb
         run: node scripts/build-mcpb.mjs
 

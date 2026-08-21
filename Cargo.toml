@@ -35,6 +35,10 @@ anyhow = "1"
 
 [dev-dependencies]
 wiremock = "0.6"
+# In-process e2e test only (W2.4) - Cargo unifies features per crate version,
+# so this never reaches the shipped binary (dev-dependencies aren't built
+# for `cargo build --release`).
+rmcp = { version = "3.1", features = ["client"] }
 
 [profile.release]
 opt-level = "z"
