@@ -41,10 +41,11 @@ const SERVER_ACTIONS: [&str; 23] = [
 
 const METRIC_TYPES: [&str; 3] = ["cpu", "disk", "network"];
 
-/// Numeric ID of an action, shared by list/get.
+/// Numeric ID of an action to poll.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct IdArgs {
-    /// Numeric ID of the resource, from the matching list_* tool's response.
+    /// Numeric ID of the action, e.g. the `action.id` in a mutation's
+    /// response, or an ID already known and passed to list_actions.
     pub id: u64,
 }
 
@@ -86,13 +87,14 @@ pub(crate) struct ServerActionArgs {
     pub action: String,
     /// Per-action request body, e.g. {"image": "ubuntu-24.04"} for rebuild.
     /// Sent as {} when omitted, which is correct for body-less actions.
-    pub params: Option<serde_json::Value>,
+    /// Must be a JSON object - a scalar cannot become an HTTP body.
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ListActionsArgs {
     /// Action IDs to fetch. The API removed listing all actions (2025-01-30);
-    /// at least one ID is required.
+    /// an empty list is rejected, not sent as a bare GET /actions.
     pub id: Vec<u64>,
 }
 
@@ -112,6 +114,12 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<UpdateServerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if args.name.is_none() && args.labels.is_none() {
+            return Err(ErrorData::invalid_params(
+                "set name and/or labels - an empty update sends a no-op PUT",
+                None,
+            ));
+        }
         let id = args.id;
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -188,7 +196,9 @@ impl HcloudServer {
                 None,
             ));
         }
-        let body = args.params.unwrap_or_else(|| serde_json::json!({}));
+        let body = args
+            .params
+            .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
         respond(
             self.client
                 .post(
@@ -213,6 +223,12 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ListActionsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if args.id.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "id must contain at least one action ID",
+                None,
+            ));
+        }
         let mut query = Vec::new();
         for id in args.id {
             push_param(&mut query, "id", Some(id.to_string()));
@@ -317,31 +333,52 @@ mod tests {
 
     #[tokio::test]
     async fn get_server_metrics_passes_the_query_params() {
+        // Distinct-id table: if the path were hardcoded to either literal,
+        // the *other* call would 404 against the mock and fail this test.
         let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/servers/5/metrics"))
-            .and(query_param("type", "cpu,disk"))
-            .and(query_param("start", "2024-01-01T00:00:00Z"))
-            .and(query_param("end", "2024-01-02T00:00:00Z"))
-            .and(query_param("step", "60"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"metrics": {}})),
-            )
-            .mount(&mock)
-            .await;
+        for id in [5u64, 91] {
+            Mock::given(method("GET"))
+                .and(path(format!("/servers/{id}/metrics")))
+                .and(query_param("type", "cpu,disk"))
+                .and(query_param("start", "2024-01-01T00:00:00Z"))
+                .and(query_param("end", "2024-01-02T00:00:00Z"))
+                .and(query_param("step", "60"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "metrics": {"for": id}
+                })))
+                .mount(&mock)
+                .await;
 
-        let server = server_for(mock.uri());
-        let res = server
-            .get_server_metrics(Parameters(GetServerMetricsArgs {
-                id: 5,
-                r#type: "cpu,disk".into(),
-                start: "2024-01-01T00:00:00Z".into(),
-                end: "2024-01-02T00:00:00Z".into(),
-                step: Some(60.0),
+            let server = server_for(mock.uri());
+            let res = server
+                .get_server_metrics(Parameters(GetServerMetricsArgs {
+                    id,
+                    r#type: "cpu,disk".into(),
+                    start: "2024-01-01T00:00:00Z".into(),
+                    end: "2024-01-02T00:00:00Z".into(),
+                    step: Some(60.0),
+                }))
+                .await
+                .unwrap();
+            assert_eq!(
+                tool_result_json(&res),
+                serde_json::json!({"metrics": {"for": id}})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn update_server_rejects_an_all_unset_update_with_invalid_params() {
+        let server = server_for("http://127.0.0.1:9".to_string());
+        let err = server
+            .update_server(Parameters(UpdateServerArgs {
+                id: 1,
+                name: None,
+                labels: None,
             }))
             .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"metrics": {}}));
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -362,26 +399,35 @@ mod tests {
 
     #[tokio::test]
     async fn server_action_forwards_the_params_body_to_the_action_path() {
+        // Distinct-id table: a hardcoded id in the path would 404 on the
+        // other iteration's mock and fail this test.
         let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/servers/7/actions/rebuild"))
-            .and(body_json(serde_json::json!({"image": "ubuntu-24.04"})))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_json(serde_json::json!({"action": {}})),
-            )
-            .mount(&mock)
-            .await;
+        for id in [7u64, 130] {
+            Mock::given(method("POST"))
+                .and(path(format!("/servers/{id}/actions/rebuild")))
+                .and(body_json(serde_json::json!({"image": "ubuntu-24.04"})))
+                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                    "action": {"id": id}
+                })))
+                .mount(&mock)
+                .await;
 
-        let server = server_for(mock.uri());
-        let res = server
-            .server_action(Parameters(ServerActionArgs {
-                id: 7,
-                action: "rebuild".into(),
-                params: Some(serde_json::json!({"image": "ubuntu-24.04"})),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(tool_result_json(&res), serde_json::json!({"action": {}}));
+            let server = server_for(mock.uri());
+            let mut params = serde_json::Map::new();
+            params.insert("image".to_string(), serde_json::json!("ubuntu-24.04"));
+            let res = server
+                .server_action(Parameters(ServerActionArgs {
+                    id,
+                    action: "rebuild".into(),
+                    params: Some(params),
+                }))
+                .await
+                .unwrap();
+            assert_eq!(
+                tool_result_json(&res),
+                serde_json::json!({"action": {"id": id}})
+            );
+        }
     }
 
     #[tokio::test]
@@ -451,25 +497,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_action_hits_the_id_path() {
-        let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/actions/42"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "action": {"id": 42, "status": "running"}
-            })))
-            .mount(&mock)
-            .await;
-
-        let server = server_for(mock.uri());
-        let res = server
-            .get_action(Parameters(IdArgs { id: 42 }))
+    async fn list_actions_rejects_an_empty_id_list_with_invalid_params() {
+        let server = server_for("http://127.0.0.1:9".to_string());
+        let err = server
+            .list_actions(Parameters(ListActionsArgs { id: vec![] }))
             .await
-            .unwrap();
-        assert_eq!(
-            tool_result_json(&res),
-            serde_json::json!({"action": {"id": 42, "status": "running"}})
-        );
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn get_action_hits_the_id_path() {
+        // Distinct-id table: a hardcoded id in the path would 404 on the
+        // other iteration's mock and fail this test.
+        let mock = MockServer::start().await;
+        for id in [42u64, 128] {
+            Mock::given(method("GET"))
+                .and(path(format!("/actions/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "action": {"id": id, "status": "running"}
+                })))
+                .mount(&mock)
+                .await;
+
+            let server = server_for(mock.uri());
+            let res = server.get_action(Parameters(IdArgs { id })).await.unwrap();
+            assert_eq!(
+                tool_result_json(&res),
+                serde_json::json!({"action": {"id": id, "status": "running"}})
+            );
+        }
     }
 
     #[tokio::test]
@@ -486,6 +543,41 @@ mod tests {
         let server = server_for(mock.uri());
         let res = server.get_pricing().await.unwrap();
         assert_eq!(tool_result_json(&res), serde_json::json!({"pricing": {}}));
+    }
+
+    /// Pins the allowlist to the spec's 23 POST /servers/{id}/actions/*
+    /// operations, in declared order, so an accidental addition/removal/typo
+    /// is caught here instead of only surfacing as a runtime 404.
+    #[test]
+    fn server_actions_is_pinned_to_the_spec_list() {
+        assert_eq!(
+            SERVER_ACTIONS,
+            [
+                "add_to_placement_group",
+                "attach_iso",
+                "attach_to_network",
+                "change_alias_ips",
+                "change_dns_ptr",
+                "change_protection",
+                "change_type",
+                "create_image",
+                "detach_from_network",
+                "detach_iso",
+                "disable_backup",
+                "disable_rescue",
+                "enable_backup",
+                "enable_rescue",
+                "poweroff",
+                "poweron",
+                "reboot",
+                "rebuild",
+                "remove_from_placement_group",
+                "request_console",
+                "reset",
+                "reset_password",
+                "shutdown",
+            ]
+        );
     }
 
     /// Mirrors compute's router annotation assertion: (read_only, destructive)
