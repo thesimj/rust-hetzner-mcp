@@ -160,19 +160,17 @@ fn endpoint(env_value: Option<String>) -> Result<String> {
 
 /// Whether `v` is an `http://` URL whose host is a loopback address - the
 /// only case a plaintext `HCLOUD_ENDPOINT` override is allowed (wiremock in
-/// tests; `HcloudClient::new` itself stays scheme-agnostic for the same reason).
+/// tests; `HcloudClient::new` itself stays scheme-agnostic for the same
+/// reason). Parsed with `url::Url` (D2 finding 1): a hand-rolled string split
+/// on "http://[...]" read only up to the bracket and missed userinfo
+/// smuggling ("http://[::1]@evil.example/v1" has host "evil.example", not
+/// "::1" - `Url::host_str` resolves the real authority, not the prefix).
 fn is_loopback_http(v: &str) -> bool {
-    let Some(rest) = v.strip_prefix("http://") else {
+    let Ok(url) = url::Url::parse(v) else {
         return false;
     };
-    // A bracketed IPv6 literal (e.g. "[::1]:1/v1") contains ':' itself, so it
-    // must be extracted before splitting the host from an optional port.
-    let host = if let Some(inner) = rest.strip_prefix('[') {
-        inner.split(']').next().unwrap_or("")
-    } else {
-        rest.split(['/', ':']).next().unwrap_or("")
-    };
-    host == "127.0.0.1" || host == "::1" || host == "localhost"
+    // `Url::host_str` renders an IPv6 host with its brackets intact.
+    url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"))
 }
 
 /// `{"error": {"code", "message", "details"?}}` -> "code: message (details)";
@@ -235,6 +233,23 @@ mod tests {
     fn endpoint_rejects_a_non_https_non_loopback_override() {
         let err = endpoint(Some("http://api.hetzner.cloud/v1".into())).unwrap_err();
         assert!(err.to_string().contains("https://"), "got: {err}");
+    }
+
+    /// D2 finding 1: the old string-splitting guard read only up to the
+    /// first '@'/':' after "http://[...]", so a bracketed host followed by
+    /// userinfo-smuggled real authority ("[::1]@evil.example") looked like a
+    /// bare "::1" and passed. Every such form must now be rejected.
+    #[test]
+    fn endpoint_rejects_userinfo_smuggling_bypass_attempts() {
+        for bad in [
+            "http://[::1]@evil.example/v1",
+            "http://[::1]:80@evil.example/v1",
+            "http://localhost@evil.example/v1",
+            "http://127.0.0.1@evil.example/v1",
+        ] {
+            let err = endpoint(Some(bad.into())).expect_err(bad);
+            assert!(err.to_string().contains("https://"), "{bad} got: {err}");
+        }
     }
 
     #[test]

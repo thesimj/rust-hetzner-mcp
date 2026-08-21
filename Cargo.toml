@@ -32,6 +32,9 @@ reqwest = { version = "0.13", default-features = false, features = [
     "gzip",
 ] }
 anyhow = "1"
+# Already a transitive dep via reqwest; promoted to direct so hcloud.rs can
+# parse HCLOUD_ENDPOINT properly instead of hand-splitting (D2 finding 1).
+url = "=2.5.8"
 
 [dev-dependencies]
 wiremock = "0.6"
