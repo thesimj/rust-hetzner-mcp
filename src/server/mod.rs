@@ -60,19 +60,19 @@ impl Projects {
     }
 
     /// Resolve a call's `project` argument to a (name, token) pair, or a
-    /// `-32602 invalid_params` per §4/§5. `read_only` gates whether the
-    /// `HCLOUD_PROJECT` pin may stand in for a missing selector (§4 hardening,
-    /// decision D2): mutating tools always require an explicit selector.
+    /// `-32602 invalid_params` per §4/§5. `read_only` gates the pin per the
+    /// §4 hardening (D2): mutating tools always require an explicit selector.
     pub(crate) fn resolve(
         &self,
         selector: Option<String>,
         read_only: bool,
     ) -> Result<(String, String), ErrorData> {
-        if let [(only_name, only_token)] = &self.tokens.iter().collect::<Vec<_>>()[..] {
+        if self.tokens.len() == 1 {
+            let (only_name, only_token) = self.tokens.iter().next().expect("checked len == 1");
             return match selector {
-                None => Ok(((*only_name).clone(), (*only_token).clone())),
-                Some(s) if s.is_empty() || &s == *only_name => {
-                    Ok(((*only_name).clone(), (*only_token).clone()))
+                None => Ok((only_name.clone(), only_token.clone())),
+                Some(s) if s.is_empty() || &s == only_name => {
+                    Ok((only_name.clone(), only_token.clone()))
                 }
                 Some(s) => Err(ErrorData::invalid_params(
                     format!("unknown project \"{s}\"; this server has one project: {only_name}"),
@@ -165,15 +165,20 @@ pub(crate) fn parse_token_env(raw: &str, pin: Option<String>) -> Result<Projects
 }
 
 /// Inject the `project` schema property (§6.3) into every tool except
-/// `list_projects`, which takes none. `required` mirrors "no pin configured"
-/// (D2). Caveat: the property exists in the JSON schema only, never in the
-/// Rust arg structs (T15) - safe today because no struct denies unknown
-/// fields and rmcp does not validate arguments against the schema itself.
-fn inject_project_property(router: &mut ToolRouter<HcloudServer>, required: bool) {
+/// `list_projects`. With a pin, only read-only tools may omit it - `resolve`
+/// never lets the pin cover a mutating call, so the schema must not either.
+fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&str>) {
     for route in router.map.values_mut() {
         if route.attr.name == "list_projects" {
             continue;
         }
+        let read_only = route
+            .attr
+            .annotations
+            .as_ref()
+            .and_then(|a| a.read_only_hint)
+            == Some(true);
+        let required = pin.is_none() || !read_only;
         let schema = Arc::make_mut(&mut route.attr.input_schema);
         schema
             .entry("properties".to_string())
@@ -195,9 +200,9 @@ fn inject_project_property(router: &mut ToolRouter<HcloudServer>, required: bool
     }
 }
 
-/// MCP server wrapping an [`HcloudClient`]; the client's token is swapped
-/// per call to the resolved project's (§7.1), so `client` always holds
-/// whichever project was used most recently for construction only.
+/// MCP server wrapping an [`HcloudClient`]; `client`'s own token is only a
+/// construction-time template and is never dispatched against directly -
+/// `call_tool` swaps in the resolved project's token before every call (§7.1).
 #[derive(Clone)]
 pub struct HcloudServer {
     pub(crate) client: HcloudClient,
@@ -217,7 +222,7 @@ impl HcloudServer {
             + Self::lb_zone_ops_router()
             + Self::projects_router();
         if projects.len() > 1 {
-            inject_project_property(&mut tool_router, projects.pin.is_none());
+            inject_project_property(&mut tool_router, projects.pin.as_deref());
         }
         Self {
             client,
@@ -233,7 +238,7 @@ fn extract_selector(
     arguments: &mut Option<serde_json::Map<String, Value>>,
 ) -> Result<Option<String>, ErrorData> {
     match arguments.as_mut().and_then(|a| a.remove("project")) {
-        None => Ok(None),
+        None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
         Some(_) => Err(ErrorData::invalid_params("project must be a string", None)),
     }
@@ -246,18 +251,21 @@ fn annotate_project(result: CallToolResponse, name: &str) -> CallToolResponse {
     let CallToolResponse::Complete(mut result) = result else {
         return result;
     };
-    if let Some(ContentBlock::Text(text)) = result.content.first() {
+    let prepend = |result: &mut CallToolResult| {
+        result
+            .content
+            .insert(0, ContentBlock::text(format!("project: {name}")));
+    };
+    if result.is_error == Some(true) {
+        prepend(&mut result);
+    } else if let Some(ContentBlock::Text(text)) = result.content.first() {
         match serde_json::from_str::<Value>(&text.text) {
             Ok(v) => {
                 result.content[0] = ContentBlock::text(
                     serde_json::json!({"project": name, "result": v}).to_string(),
                 );
             }
-            Err(_) => {
-                result
-                    .content
-                    .insert(0, ContentBlock::text(format!("project: {name}")));
-            }
+            Err(_) => prepend(&mut result),
         }
     }
     CallToolResponse::Complete(result)
@@ -326,6 +334,28 @@ fn project_fingerprint(v: &Value) -> String {
     }
 }
 
+impl HcloudServer {
+    /// `call_tool`'s pre-dispatch decision: `None` dispatches untouched
+    /// (`list_projects` spans every project itself); `Some((name, token))`
+    /// is the resolved project. Existence is checked before resolving.
+    fn plan_call(
+        &self,
+        name: &str,
+        arguments: &mut Option<serde_json::Map<String, Value>>,
+    ) -> Result<Option<(String, String)>, ErrorData> {
+        if name == "list_projects" {
+            return Ok(None);
+        }
+        let tool = self
+            .tool_router
+            .get(name)
+            .ok_or_else(|| ErrorData::invalid_params("tool not found", None))?;
+        let read_only = tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true);
+        let selector = extract_selector(arguments)?;
+        self.projects.resolve(selector, read_only).map(Some)
+    }
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for HcloudServer {
     async fn call_tool(
@@ -333,14 +363,13 @@ impl ServerHandler for HcloudServer {
         mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let selector = extract_selector(&mut request.arguments)?;
-        let read_only = self
-            .tool_router
-            .get(request.name.as_ref())
-            .and_then(|t| t.annotations.as_ref())
-            .and_then(|a| a.read_only_hint)
-            .unwrap_or(false);
-        let (name, token) = self.projects.resolve(selector, read_only)?;
+        let Some((name, token)) = self.plan_call(request.name.as_ref(), &mut request.arguments)?
+        else {
+            return self
+                .tool_router
+                .call(ToolCallContext::new(self, request, context))
+                .await;
+        };
         let scoped = Self {
             client: self.client.with_token(token),
             ..self.clone()
@@ -366,10 +395,15 @@ impl ServerHandler for HcloudServer {
             calling any of them.",
         );
         if self.projects.len() > 1 {
+            let pin_note = if self.projects.pin.is_some() {
+                " With a pin configured, read-only tools may omit `project`; \
+                 mutating tools always require it."
+            } else {
+                " No pin is configured, so every tool requires `project`."
+            };
             instructions.push_str(&format!(
-                " Several projects are configured; pass `project` on every tool \
-                 call to select one (required unless the operator pinned a \
-                 default). Configured projects: {}.",
+                " Several projects are configured; pass `project` to select one.\
+                {pin_note} Configured projects: {}.",
                 self.projects.names_list()
             ));
         }
@@ -510,13 +544,10 @@ pub async fn run() -> anyhow::Result<()> {
         .ok()
         .filter(|s| !s.is_empty());
     let projects = parse_token_env(&raw, pin)?;
-    let seed_token = projects
-        .tokens
-        .values()
-        .next()
-        .expect("parse_token_env always yields at least one project")
-        .clone();
-    let client = HcloudClient::from_env(seed_token)?;
+    // Empty on purpose: this client is only a template (see HcloudServer's
+    // doc comment) - a call that skipped scoping would fail loudly instead
+    // of silently reusing whichever project happened to be seeded here.
+    let client = HcloudClient::from_env(String::new())?;
     let service = HcloudServer::new(client, projects).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -722,17 +753,9 @@ mod tests {
     }
 }
 
-/// Multi-project spec test matrix (T1-T16).
-///
-/// `call_tool` itself is ~10 lines of glue: `extract_selector`, then
-/// `Projects::resolve`, then `client.with_token`, then dispatch. rmcp 3.1.4's
-/// `Peer::new` is crate-private and this crate does not enable rmcp's
-/// "client" feature (Cargo.toml is out of this brief's lease), so there is no
-/// public way to build a `RequestContext` from outside the crate to drive
-/// `call_tool` end-to-end. Each piece of that glue is instead proven directly:
-/// `resolve`/`extract_selector` as pure functions, and the resolved token
-/// reaching the wire via a manually-scoped client calling the real tool
-/// method, exactly as `call_tool` does internally.
+/// Multi-project spec test matrix (T1-T16) plus B6 fix-round regressions.
+/// Drives `plan_call` directly - rmcp's `Peer::new` is crate-private, so no
+/// `RequestContext` exists here to drive `call_tool` itself end-to-end.
 #[cfg(test)]
 mod multi_project_tests {
     use rmcp::handler::server::wrapper::Parameters;
@@ -749,7 +772,7 @@ mod multi_project_tests {
     /// original 92 tools was exactly this many bytes. §8/T1.
     const BASELINE_92_TOOLS_LEN: usize = 66_748;
 
-    fn non_json_tools(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
+    fn tools_except_list_projects(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
         tools
             .into_iter()
             .filter(|t| t.name != "list_projects")
@@ -767,14 +790,26 @@ mod multi_project_tests {
         }
     }
 
-    /// Reproduce `call_tool`'s scoping step: clone `base` with its client
-    /// pointed at `token`, exactly as the resolved (name, token) pair from
-    /// `Projects::resolve` would be applied before dispatch.
-    fn scoped(base: &HcloudServer, token: String) -> HcloudServer {
-        HcloudServer {
-            client: base.client.with_token(token),
-            ..base.clone()
-        }
+    fn schema_has_project(tool: &rmcp::model::Tool) -> bool {
+        tool.input_schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("project")
+    }
+
+    fn schema_requires_project(tool: &rmcp::model::Tool) -> bool {
+        tool.input_schema
+            .get("required")
+            .is_some_and(|r| r.as_array().unwrap().iter().any(|v| v == "project"))
+    }
+
+    fn project_arg(name: &str) -> Option<serde_json::Map<String, Value>> {
+        Some(
+            serde_json::json!({"project": name})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
     }
 
     // T1: single-project schemas carry no `project` property, and the
@@ -782,7 +817,7 @@ mod multi_project_tests {
     #[test]
     fn t1_single_project_schemas_are_unchanged() {
         let server = server_for("http://127.0.0.1:9".to_string());
-        let tools = non_json_tools(server.tool_router.list_all());
+        let tools = tools_except_list_projects(server.tool_router.list_all());
         assert_eq!(tools.len(), 92);
         for tool in &tools {
             assert!(
@@ -805,28 +840,41 @@ mod multi_project_tests {
     }
 
     // T2: multi-project schemas carry `project` on all 92 tools (not on
-    // list_projects); required with no pin, optional with a pin.
+    // list_projects); required with no pin. With a pin (fix 2), required
+    // flips per route: optional on a read-only tool, still required on a
+    // mutating one, matching what `resolve` actually enforces.
     #[test]
     fn t2_multi_project_schemas_gain_the_project_property() {
-        for (pin, required) in [(None, true), (Some("prod"), false)] {
-            let server =
-                server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], pin);
-            let tools = non_json_tools(server.tool_router.list_all());
-            assert_eq!(tools.len(), 92);
-            for tool in &tools {
-                let props = tool.input_schema["properties"].as_object().unwrap();
-                assert!(
-                    props.contains_key("project"),
-                    "{}: missing project",
-                    tool.name
-                );
-                let is_required = tool
-                    .input_schema
-                    .get("required")
-                    .is_some_and(|r| r.as_array().unwrap().iter().any(|v| v == "project"));
-                assert_eq!(is_required, required, "{}: required mismatch", tool.name);
-            }
+        let server =
+            server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
+        let tools = tools_except_list_projects(server.tool_router.list_all());
+        assert_eq!(tools.len(), 92);
+        for tool in &tools {
+            assert!(schema_has_project(tool), "{}: missing project", tool.name);
+            assert!(
+                schema_requires_project(tool),
+                "{}: should be required with no pin",
+                tool.name
+            );
         }
+
+        let pinned = server_for_projects(
+            "http://127.0.0.1:9".to_string(),
+            &["prod", "staging"],
+            Some("prod"),
+        );
+        let read_only = pinned.tool_router.get("list_servers").unwrap();
+        assert!(schema_has_project(read_only));
+        assert!(
+            !schema_requires_project(read_only),
+            "read-only tool should be optional under a pin"
+        );
+        let mutating = pinned.tool_router.get("delete_server").unwrap();
+        assert!(schema_has_project(mutating));
+        assert!(
+            schema_requires_project(mutating),
+            "mutating tool must stay required even under a pin"
+        );
     }
 
     // T3: project: "staging" resolves to the staging token, and that token
@@ -847,15 +895,16 @@ mod multi_project_tests {
             .await;
 
         let base = server_for_projects(mock.uri(), &["prod", "staging"], None);
-        let (name, token) = base
-            .projects
-            .resolve(Some("staging".to_string()), false)
-            .unwrap();
+        let mut args = project_arg("staging");
+        let (name, token) = base.plan_call("list_servers", &mut args).unwrap().unwrap();
         assert_eq!(name, "staging");
-        let result = scoped(&base, token)
-            .list_servers(Parameters(no_filters()))
-            .await
-            .unwrap();
+        let result = HcloudServer {
+            client: base.client.with_token(token),
+            ..base.clone()
+        }
+        .list_servers(Parameters(no_filters()))
+        .await
+        .unwrap();
         assert_ne!(result.is_error, Some(true));
     }
 
@@ -866,7 +915,8 @@ mod multi_project_tests {
     fn t4_ambiguous_call_is_rejected_with_zero_http() {
         let server =
             server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
-        let e = server.projects.resolve(None, false).unwrap_err();
+        let mut args = None;
+        let e = server.plan_call("list_servers", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
         assert!(
             e.message.contains("prod") && e.message.contains("staging"),
@@ -880,10 +930,8 @@ mod multi_project_tests {
     fn t5_unknown_project_name_is_rejected_with_zero_http() {
         let server =
             server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
-        let e = server
-            .projects
-            .resolve(Some("prodd".to_string()), false)
-            .unwrap_err();
+        let mut args = project_arg("prodd");
+        let e = server.plan_call("list_servers", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
         assert!(
             e.message.contains("prodd") && e.message.contains("prod, staging"),
@@ -897,10 +945,8 @@ mod multi_project_tests {
     #[test]
     fn t6_unknown_selector_in_single_project_mode_is_rejected_with_zero_http() {
         let server = server_for("http://127.0.0.1:9".to_string());
-        let e = server
-            .projects
-            .resolve(Some("prod".to_string()), false)
-            .unwrap_err();
+        let mut args = project_arg("prod");
+        let e = server.plan_call("list_servers", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
         assert!(e.message.contains("default"), "{}", e.message);
     }
@@ -909,8 +955,11 @@ mod multi_project_tests {
     #[test]
     fn t6b_accepted_selectors_in_single_project_mode_all_succeed() {
         let server = server_for("http://127.0.0.1:9".to_string());
-        for selector in [None, Some("default".to_string()), Some(String::new())] {
-            let (name, _token) = server.projects.resolve(selector, false).unwrap();
+        for mut args in [None, project_arg("default"), project_arg("")] {
+            let (name, _token) = server
+                .plan_call("list_servers", &mut args)
+                .unwrap()
+                .unwrap();
             assert_eq!(name, "default");
         }
     }
@@ -956,12 +1005,16 @@ mod multi_project_tests {
             .await;
 
         let base = server_for_projects(mock.uri(), &["prod", "staging"], Some("prod"));
-        let (name, token) = base.projects.resolve(None, true).unwrap();
+        let mut args = None;
+        let (name, token) = base.plan_call("list_servers", &mut args).unwrap().unwrap();
         assert_eq!(name, "prod");
-        let result = scoped(&base, token)
-            .list_servers(Parameters(no_filters()))
-            .await
-            .unwrap();
+        let result = HcloudServer {
+            client: base.client.with_token(token),
+            ..base.clone()
+        }
+        .list_servers(Parameters(no_filters()))
+        .await
+        .unwrap();
         assert_ne!(result.is_error, Some(true));
     }
 
@@ -975,7 +1028,8 @@ mod multi_project_tests {
             &["prod", "staging"],
             Some("prod"),
         );
-        let e = server.projects.resolve(None, false).unwrap_err();
+        let mut args = Some(serde_json::json!({"id": 1}).as_object().unwrap().clone());
+        let e = server.plan_call("delete_server", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
     }
 
@@ -1069,11 +1123,15 @@ mod multi_project_tests {
             .await;
 
         let base = server_for_projects(mock.uri(), &["prod", "staging"], None);
-        let (_, token) = base
-            .projects
-            .resolve(Some("staging".to_string()), true)
-            .unwrap();
-        let result = scoped(&base, token).get_pricing().await.unwrap();
+        let mut args = project_arg("staging");
+        let (_, token) = base.plan_call("get_pricing", &mut args).unwrap().unwrap();
+        let result = HcloudServer {
+            client: base.client.with_token(token),
+            ..base.clone()
+        }
+        .get_pricing()
+        .await
+        .unwrap();
         assert_ne!(result.is_error, Some(true));
     }
 
@@ -1106,8 +1164,44 @@ mod multi_project_tests {
         assert_eq!(staging["is_default"], false);
     }
 
-    // call_tool glue: extract_selector pulls "project" out and rejects a
-    // non-string value before it ever reaches `Projects::resolve`.
+    // Fix 1 (blocking): list_projects must be reachable with n>1 and no pin.
+    // Reproduces the bug first (plan_call used to run it through `resolve`,
+    // which errors with no pin and no selector - list_projects' schema has
+    // no `project` property, so a schema-obedient client could never supply
+    // one), then proves the fix: plan_call treats it as project-independent,
+    // and the real call still succeeds end-to-end.
+    #[tokio::test]
+    async fn fix1_list_projects_is_reachable_with_no_pin() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"servers": []})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for_projects(mock.uri(), &["prod", "staging"], None);
+        assert_eq!(server.plan_call("list_projects", &mut None).unwrap(), None);
+        let result = server.list_projects().await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+    }
+
+    // Fix 6: an unknown tool name must report "tool not found", not
+    // "project is required" - checking existence before resolving.
+    #[test]
+    fn fix6_unknown_tool_reports_not_found_before_project_required() {
+        let server =
+            server_for_projects("http://127.0.0.1:9".to_string(), &["prod", "staging"], None);
+        let e = server.plan_call("no_such_tool", &mut None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
+        assert!(e.message.contains("not found"), "{}", e.message);
+        assert!(!e.message.contains("project is required"), "{}", e.message);
+    }
+
+    // call_tool glue: extract_selector pulls "project" out, maps a JSON null
+    // to "no selector" (fix 4), and rejects any other non-string value
+    // before it ever reaches `Projects::resolve`.
     #[test]
     fn extract_selector_removes_project_and_rejects_non_strings() {
         let mut none: Option<serde_json::Map<String, Value>> = None;
@@ -1125,6 +1219,12 @@ mod multi_project_tests {
         );
         assert!(!with_project.unwrap().contains_key("project"));
 
+        let mut null_project = project_arg("").map(|mut m| {
+            m.insert("project".to_string(), Value::Null);
+            m
+        });
+        assert_eq!(extract_selector(&mut null_project).unwrap(), None);
+
         let mut bad = Some(
             serde_json::json!({"project": 5})
                 .as_object()
@@ -1135,6 +1235,44 @@ mod multi_project_tests {
             extract_selector(&mut bad).unwrap_err().code,
             ErrorCode::INVALID_PARAMS
         );
+    }
+
+    // Fix 4: a `null` selector with a pin configured resolves exactly like
+    // an omitted one - to the pin, for a read-only tool.
+    #[test]
+    fn fix4_null_selector_with_a_pin_resolves_to_the_pin() {
+        let server = server_for_projects(
+            "http://127.0.0.1:9".to_string(),
+            &["prod", "staging"],
+            Some("prod"),
+        );
+        let mut args = Some(
+            serde_json::json!({"project": null})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let (name, _token) = server
+            .plan_call("list_servers", &mut args)
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "prod");
+    }
+
+    // Fix 7: an error result whose text happens to parse as JSON must still
+    // take the "prepend" echo path, because the branch is on `is_error`, not
+    // on whether the text parses.
+    #[test]
+    fn fix7_echo_branches_on_is_error_not_json_parseability() {
+        let result = CallToolResult::error(vec![ContentBlock::text("42")]);
+        let CallToolResponse::Complete(wrapped) = annotate_project(result.into(), "staging") else {
+            panic!("expected a complete result");
+        };
+        assert_eq!(
+            wrapped.content[0].as_text().unwrap().text,
+            "project: staging"
+        );
+        assert_eq!(wrapped.content[1].as_text().unwrap().text, "42");
     }
 
     // T15: schema/struct divergence guard (§6.3 caveat) - an argument object
