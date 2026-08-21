@@ -100,7 +100,7 @@ it is never logged or written to disk. Do not commit tokens; this repo's
 | Variable          | Required | Default                          | Notes                                                                                                                    |
 | ------------------ | -------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `HCLOUD_TOKEN`    | yes      | -                                 | Hetzner Cloud API token(s). A single 64-character token names one project `default`; comma-separated `name=token` pairs (names `[a-z0-9._-]{1,64}`, each token exactly 64 characters) configure several - see [Multiple projects](#multiple-projects). Create one per [Hetzner's docs](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token). |
-| `HCLOUD_PROJECT`  | no       | -                                 | Pins a default project by name when `HCLOUD_TOKEN` configures more than one. With the pin, read-only tools may omit `project`; mutating tools still require it. |
+| `HCLOUD_PROJECT`  | no       | -                                 | Sets a default project by name when `HCLOUD_TOKEN` configures more than one. With a default project configured, read-only tools may omit `project`; mutating tools still require it. |
 | `HCLOUD_ENDPOINT` | no       | `https://api.hetzner.cloud/v1` | Overrides the API base URL, same convention as the official `hcloud` CLI.                                                |
 
 ## Multiple projects
@@ -129,9 +129,9 @@ With more than one project configured, every pre-existing tool gains a
 `project` argument ("Which configured Hetzner project to act on; call
 list_projects if unsure."); a successful result is wrapped
 as `{"project": ..., "result": ...}`, while an error result instead gets a
-prepended `project: <name>` text line. `HCLOUD_PROJECT` pins a default:
-read-only tools may then omit `project`, but mutating tools always require it
-explicitly. With one project, nothing about the tools or their output
+prepended `project: <name>` text line. `HCLOUD_PROJECT` sets a default
+project: read-only tools may then omit `project`, but mutating tools always
+require it explicitly. With one project, nothing about the tools or their output
 changes. Use `list_projects` to confirm names and catch a mislabeled token -
 it returns each project's name, whether it's the default, and a lazy
 fingerprint (server count and up to two server names, or
@@ -250,7 +250,7 @@ object; the allowed actions are noted after each.
 - `certificate_action` - run a certificate action. Actions: retry (retries issuance for a failed managed certificate)
 
 **ISOs**
-- `list_isos` - list ISO images available to attach to servers, filterable by name/architecture
+- `list_isos` - list ISOs available to attach to servers, filterable by name/architecture
 - `get_iso` - get an ISO by ID
 
 **Placement groups**
@@ -330,8 +330,9 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The test suite (154 tests) runs entirely against a local mock of the Hetzner
-API - no token and no network access to Hetzner are needed to develop.
+The test suite (160 unit tests + 1 integration test) runs entirely against a
+local mock of the Hetzner API - no token and no network access to Hetzner are
+needed to develop.
 
 ## Privacy Policy
 

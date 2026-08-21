@@ -167,9 +167,10 @@ impl HcloudServer {
         poweron, reboot, rebuild, remove_from_placement_group, request_console, \
         reset, reset_password, shutdown. rebuild replaces the disk and destroys \
         its data; create_image creates a BILLABLE snapshot; change_type requires \
-        the server powered off; for poweron/poweroff/reboot/shutdown use \
-        power_server. params carries the per-action request body (e.g. \
-        {\"image\": \"ubuntu-24.04\"} for rebuild); omit it for actions with no body.",
+        the server powered off; reset is an ungraceful hard power cycle, not a \
+        clean reboot; for poweron/poweroff/reboot/shutdown use power_server. \
+        params carries the per-action request body (e.g. {\"image\": \
+        \"ubuntu-24.04\"} for rebuild); omit it for actions with no body.",
         annotations(
             title = "Run server action",
             read_only_hint = false,

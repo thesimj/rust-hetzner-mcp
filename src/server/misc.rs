@@ -155,7 +155,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List ISO images available to attach to servers, optionally filtered by name, architecture, or the architecture wildcard flag.",
+        description = "List ISOs available to attach to servers, optionally filtered by name, architecture, or the architecture wildcard flag.",
         annotations(
             title = "List ISOs",
             read_only_hint = true,
@@ -225,7 +225,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List DNS zones, optionally filtered by name, label selector, sort, or mode.",
+        description = "List DNS Zones, optionally filtered by name, label selector, sort, or mode.",
         annotations(
             title = "List Zones",
             read_only_hint = true,
@@ -242,7 +242,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Get a single DNS zone by ID or name.",
+        description = "Get a single DNS Zone by ID or name.",
         annotations(
             title = "Get Zone",
             read_only_hint = true,

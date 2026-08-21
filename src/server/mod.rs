@@ -775,12 +775,10 @@ mod multi_project_tests {
     use super::test_support::{project_token, server_for, server_for_projects};
     use super::*;
 
-    /// `serde_json::to_string(&server.tool_router.list_all())` for the
-    /// original 92 tools is exactly this many bytes, re-measured after the
-    /// N1 panel-fix prose changes (F1/F3/F4/F5/F9/F10). Per decision R3, this
-    /// pin proves single-vs-multi parity (with T6c) for the *current* prose,
-    /// not byte-identity to any earlier release's wording.
-    const BASELINE_92_TOOLS_LEN: usize = 67_901;
+    /// Byte length of `serde_json::to_string(&server.tool_router.list_all())`
+    /// for the 92 non-`list_projects` tools, after the N1 panel fixes. Per R3
+    /// this proves single-vs-multi parity (with T6c), not identity to older prose.
+    const BASELINE_92_TOOLS_LEN: usize = 67_962;
 
     fn tools_except_list_projects(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
         tools

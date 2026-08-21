@@ -234,10 +234,9 @@ pub(crate) struct ListZoneRrsetsArgs {
     /// ID or name of the Zone.
     pub id_or_name: String,
     /// Exact RRSet name to filter by.
-    pub name: Option<String>,
+    pub rr_name: Option<String>,
     /// Filter by RRSet type; repeatable.
-    #[serde(rename = "type")]
-    pub r#type: Option<Vec<String>>,
+    pub rr_type: Option<Vec<String>>,
     /// Label selector, e.g. "env=prod".
     pub label_selector: Option<String>,
     /// Sort order, e.g. "name:asc"; repeatable.
@@ -275,12 +274,10 @@ pub(crate) struct CreateZoneRrsetArgs {
     #[serde(skip_serializing)]
     pub id_or_name: String,
     /// Name of the RRSet, e.g. "www" (use "@" for the zone apex).
-    #[serde(rename = "name")]
-    #[schemars(rename = "rr_name")]
+    #[serde(rename(serialize = "name"))]
     pub rr_name: String,
     /// Type of the RRSet, e.g. "A".
-    #[serde(rename = "type")]
-    #[schemars(rename = "rr_type")]
+    #[serde(rename(serialize = "type"))]
     pub rr_type: String,
     /// TTL of the RRSet, in seconds; the Zone's default TTL is used if unset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -574,9 +571,9 @@ impl HcloudServer {
     ) -> Result<CallToolResult, ErrorData> {
         validate_zone_id(&args.id_or_name)?;
         let mut query = pagination_query(args.page, args.per_page);
-        push_param(&mut query, "name", args.name);
+        push_param(&mut query, "name", args.rr_name);
         push_param(&mut query, "label_selector", args.label_selector);
-        for t in args.r#type.into_iter().flatten() {
+        for t in args.rr_type.into_iter().flatten() {
             push_param(&mut query, "type", Some(t));
         }
         for s in args.sort.into_iter().flatten() {
@@ -590,7 +587,7 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Get a single RRSet by zone and name/type.",
+        description = "Get a single RRSet by Zone and name/type.",
         annotations(
             title = "Get Zone RRSet",
             read_only_hint = true,
@@ -1222,8 +1219,8 @@ mod tests {
         let res = server
             .list_zone_rrsets(Parameters(ListZoneRrsetsArgs {
                 id_or_name: "example.com".into(),
-                name: Some("www".into()),
-                r#type: Some(vec!["A".into(), "AAAA".into()]),
+                rr_name: Some("www".into()),
+                rr_type: Some(vec!["A".into(), "AAAA".into()]),
                 label_selector: Some("env=prod".into()),
                 sort: Some(vec!["name:asc".into()]),
                 page: Some(2),
@@ -1232,6 +1229,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tool_result_json(&res), serde_json::json!({"rrsets": []}));
+    }
+
+    /// Sibling of the create_zone_rrset round-trip fix: this struct has no
+    /// `Serialize` impl (the query is built by hand above with literal
+    /// "name"/"type" keys), so plain field renames are enough here - but the
+    /// deserialize side must still accept the schema's own advertised names.
+    #[test]
+    fn list_zone_rrsets_args_deserializes_from_its_advertised_field_names() {
+        let args: ListZoneRrsetsArgs = serde_json::from_value(serde_json::json!({
+            "id_or_name": "example.com",
+            "rr_name": "www",
+            "rr_type": ["A"]
+        }))
+        .expect("must deserialize from its own advertised schema field names");
+        assert_eq!(args.rr_name, Some("www".to_string()));
+        assert_eq!(args.rr_type, Some(vec!["A".to_string()]));
     }
 
     #[tokio::test]
@@ -1329,6 +1342,28 @@ mod tests {
         assert_eq!(tool_result_json(&res), serde_json::json!({"rrset": {}}));
     }
 
+    /// C2 blocking fix: a schema-following caller sends `rr_name`/`rr_type`
+    /// (the advertised property names) and must deserialize successfully;
+    /// serializing the same value for the wire must still emit `name`/`type`.
+    #[test]
+    fn create_zone_rrset_args_round_trips_between_advertised_names_and_the_wire_body() {
+        let args: CreateZoneRrsetArgs = serde_json::from_value(serde_json::json!({
+            "id_or_name": "example.com",
+            "rr_name": "www",
+            "rr_type": "A",
+            "records": [{"value": "198.51.100.1"}]
+        }))
+        .expect("must deserialize from its own advertised schema field names");
+        assert_eq!(args.rr_name, "www");
+        assert_eq!(args.rr_type, "A");
+
+        let wire = serde_json::to_value(&args).unwrap();
+        assert_eq!(wire["name"], serde_json::json!("www"));
+        assert_eq!(wire["type"], serde_json::json!("A"));
+        assert!(wire.get("rr_name").is_none());
+        assert!(wire.get("rr_type").is_none());
+    }
+
     #[tokio::test]
     async fn create_zone_rrset_rejects_empty_records() {
         let err = dead_server()
@@ -1419,8 +1454,8 @@ mod tests {
         })));
         assert_invalid_params!(server.list_zone_rrsets(Parameters(ListZoneRrsetsArgs {
             id_or_name: bad.clone(),
-            name: None,
-            r#type: None,
+            rr_name: None,
+            rr_type: None,
             label_selector: None,
             sort: None,
             page: None,
@@ -1789,10 +1824,8 @@ mod tests {
         }
     }
 
-    /// F8: `#[serde(rename)]` retargets the wire body (proven above by the
-    /// `body_json` assertions) but schemars still emits the Rust field ident
-    /// for the schema unless told otherwise - confirmed empirically here
-    /// rather than assumed, per the brief's instruction to verify this.
+    /// Schema properties must stay rr_name/rr_type; the round-trip test
+    /// above covers the deserialize and serialize sides this doesn't.
     #[test]
     fn create_zone_rrset_schema_uses_rr_name_and_rr_type_not_name_and_type() {
         let router = super::HcloudServer::lb_zone_ops_router();
