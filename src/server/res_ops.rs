@@ -348,8 +348,8 @@ impl HcloudServer {
 
     #[tool(
         description = "Upload a certificate, or request a managed Let's Encrypt certificate. \
-        type \"uploaded\" requires certificate and private_key; type \"managed\" requires \
-        domain_names.",
+        type defaults to uploaded; type \"uploaded\" requires certificate and private_key; \
+        type \"managed\" requires domain_names.",
         annotations(
             title = "Create certificate",
             read_only_hint = false,
@@ -361,14 +361,14 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateCertificateArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match args.r#type.as_deref() {
-            Some("uploaded") if args.certificate.is_none() || args.private_key.is_none() => {
+        match args.r#type.as_deref().unwrap_or("uploaded") {
+            "uploaded" if args.certificate.is_none() || args.private_key.is_none() => {
                 return Err(ErrorData::invalid_params(
                     "certificate and private_key are required for type \"uploaded\"",
                     None,
                 ));
             }
-            Some("managed") if args.domain_names.as_ref().is_none_or(|d| d.is_empty()) => {
+            "managed" if args.domain_names.as_ref().is_none_or(|d| d.is_empty()) => {
                 return Err(ErrorData::invalid_params(
                     "domain_names is required for type \"managed\"",
                     None,
@@ -823,11 +823,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_certificate_sends_exactly_the_required_fields_when_optionals_are_unset() {
+    async fn create_certificate_sends_exactly_the_required_fields_when_type_is_omitted() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/certificates"))
-            .and(body_json(serde_json::json!({"name": "cert-1"})))
+            .and(body_json(serde_json::json!({
+                "name": "cert-1", "certificate": "PEM", "private_key": "PEM-KEY"
+            })))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "certificate": {"id": 1}
             })))
@@ -838,9 +840,11 @@ mod tests {
         let res = server
             .create_certificate(Parameters(CreateCertificateArgs {
                 name: "cert-1".into(),
+                // D3 item 4: an omitted type defaults to "uploaded" (spec
+                // default), so certificate/private_key are still required.
                 r#type: None,
-                certificate: None,
-                private_key: None,
+                certificate: Some("PEM".into()),
+                private_key: Some("PEM-KEY".into()),
                 domain_names: None,
                 labels: None,
             }))
@@ -894,6 +898,25 @@ mod tests {
             .create_certificate(Parameters(CreateCertificateArgs {
                 name: "cert-3".into(),
                 r#type: Some("uploaded".into()),
+                certificate: None,
+                private_key: None,
+                domain_names: None,
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// D3 item 4: the spec defaults `type` to "uploaded" when omitted, so an
+    /// omitted type must be treated exactly like an explicit "uploaded" -
+    /// rejected here since neither certificate nor private_key is given.
+    #[tokio::test]
+    async fn create_certificate_rejects_an_omitted_type_missing_certificate_and_key() {
+        let err = server_for("http://127.0.0.1:9".to_string())
+            .create_certificate(Parameters(CreateCertificateArgs {
+                name: "x".into(),
+                r#type: None,
                 certificate: None,
                 private_key: None,
                 domain_names: None,
