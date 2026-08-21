@@ -164,12 +164,16 @@ pub(crate) fn parse_token_env(raw: &str, pin: Option<String>) -> Result<Projects
     Ok(Projects { tokens, pin })
 }
 
+/// Tool name shared by the schema-injection skip and `plan_call`'s
+/// project-independent check, so a rename cannot desynchronize them.
+const LIST_PROJECTS: &str = "list_projects";
+
 /// Inject the `project` schema property (§6.3) into every tool except
-/// `list_projects`. With a pin, only read-only tools may omit it - `resolve`
-/// never lets the pin cover a mutating call, so the schema must not either.
+/// `list_projects`. Schema only - no Rust struct declares `project` (T15);
+/// a strict-validation rmcp upgrade would break all 92 tools at once.
 fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&str>) {
     for route in router.map.values_mut() {
-        if route.attr.name == "list_projects" {
+        if route.attr.name == LIST_PROJECTS {
             continue;
         }
         let read_only = route
@@ -178,6 +182,7 @@ fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&s
             .as_ref()
             .and_then(|a| a.read_only_hint)
             == Some(true);
+        // `resolve` never lets the pin cover a mutating call, so neither can the schema.
         let required = pin.is_none() || !read_only;
         let schema = Arc::make_mut(&mut route.attr.input_schema);
         schema
@@ -343,7 +348,7 @@ impl HcloudServer {
         name: &str,
         arguments: &mut Option<serde_json::Map<String, Value>>,
     ) -> Result<Option<(String, String)>, ErrorData> {
-        if name == "list_projects" {
+        if name == LIST_PROJECTS {
             return Ok(None);
         }
         let tool = self
@@ -840,9 +845,8 @@ mod multi_project_tests {
     }
 
     // T2: multi-project schemas carry `project` on all 92 tools (not on
-    // list_projects); required with no pin. With a pin (fix 2), required
-    // flips per route: optional on a read-only tool, still required on a
-    // mutating one, matching what `resolve` actually enforces.
+    // list_projects), required with no pin; with a pin, required tracks
+    // "mutating" exactly, matching what `resolve` actually enforces.
     #[test]
     fn t2_multi_project_schemas_gain_the_project_property() {
         let server =
@@ -863,18 +867,18 @@ mod multi_project_tests {
             &["prod", "staging"],
             Some("prod"),
         );
-        let read_only = pinned.tool_router.get("list_servers").unwrap();
-        assert!(schema_has_project(read_only));
-        assert!(
-            !schema_requires_project(read_only),
-            "read-only tool should be optional under a pin"
-        );
-        let mutating = pinned.tool_router.get("delete_server").unwrap();
-        assert!(schema_has_project(mutating));
-        assert!(
-            schema_requires_project(mutating),
-            "mutating tool must stay required even under a pin"
-        );
+        let pinned_tools = tools_except_list_projects(pinned.tool_router.list_all());
+        assert_eq!(pinned_tools.len(), 92);
+        for tool in &pinned_tools {
+            assert!(schema_has_project(tool), "{}: missing project", tool.name);
+            let read_only = tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true);
+            assert_eq!(
+                schema_requires_project(tool),
+                !read_only,
+                "{}: required must track \"mutating\" under a pin",
+                tool.name
+            );
+        }
     }
 
     // T3: project: "staging" resolves to the staging token, and that token
@@ -1164,12 +1168,9 @@ mod multi_project_tests {
         assert_eq!(staging["is_default"], false);
     }
 
-    // Fix 1 (blocking): list_projects must be reachable with n>1 and no pin.
-    // Reproduces the bug first (plan_call used to run it through `resolve`,
-    // which errors with no pin and no selector - list_projects' schema has
-    // no `project` property, so a schema-obedient client could never supply
-    // one), then proves the fix: plan_call treats it as project-independent,
-    // and the real call still succeeds end-to-end.
+    // Fix 1: list_projects must stay reachable with n>1 and no pin - its
+    // schema has no `project` property, so plan_call must treat it as
+    // project-independent rather than routing it through `resolve`.
     #[tokio::test]
     async fn fix1_list_projects_is_reachable_with_no_pin() {
         let mock = MockServer::start().await;
