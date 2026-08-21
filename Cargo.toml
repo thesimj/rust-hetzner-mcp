@@ -1,6 +1,6 @@
 [package]
 name = "hetzner-mcp"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Nick Bubelich"]
 edition = "2024"
 # Floor set by rmcp 3.x and our use of let-chains.
