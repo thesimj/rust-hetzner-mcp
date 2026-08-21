@@ -126,9 +126,10 @@ it is never logged or written to disk. Do not commit tokens; this repo's
 ```
 
 With more than one project configured, every pre-existing tool gains a
-`project` argument ("Target project name."), and results are wrapped as
-`{"project": ..., "result": ...}`. `HCLOUD_PROJECT` pins a default: read-only
-tools may then omit `project`, but mutating tools always require it
+`project` argument ("Target project name."); a successful result is wrapped
+as `{"project": ..., "result": ...}`, while an error result instead gets a
+prepended `project: <name>` text line. `HCLOUD_PROJECT` pins a default:
+read-only tools may then omit `project`, but mutating tools always require it
 explicitly. With one project, nothing about the tools or their output
 changes. Use `list_projects` to confirm names and catch a mislabeled token -
 it returns each project's name, whether it's the default, and a lazy
