@@ -14,6 +14,9 @@ in a single Rust binary: 93 tools covering every resource group of
   servers, images, server types, SSH keys, locations, datacenters, volumes,
   networks, firewalls, Floating IPs, Primary IPs, Load Balancers, certificates,
   ISOs, placement groups, DNS zones and RRSets, action polling, and pricing.
+- **Multiple projects** - one `HCLOUD_TOKEN` can hold several projects'
+  tokens; a `project` argument and the `list_projects` tool select and list
+  them. See [Multiple projects](#multiple-projects).
 - **Safety-annotated tools** - every tool declares `readOnlyHint` and
   `destructiveHint` on the wire; billable creates and permanent deletes say so
   in their descriptions, so MCP clients can gate confirmations correctly.
@@ -135,8 +138,10 @@ fingerprint (server count and up to two server names, or
 At startup, the server rejects (non-zero exit) an empty entry, a name outside
 `[a-z0-9._-]{1,64}`, a token that isn't exactly 64 characters, a duplicate
 name, a duplicate token, mixing named and unnamed entries, or an
-`HCLOUD_PROJECT` that names a project that isn't configured. Every rejection
-cites the entry's 1-based index and never quotes a token.
+`HCLOUD_PROJECT` that names a project that isn't configured. Every Form-B
+per-entry rejection cites that entry's 1-based index (the Form-A length error
+and an unconfigured `HCLOUD_PROJECT` carry no index); no rejection ever
+quotes a token.
 
 The multi-value form belongs in your MCP client's `env` block: the official
 `hcloud` CLI reads the same `HCLOUD_TOKEN` variable, cannot parse the
