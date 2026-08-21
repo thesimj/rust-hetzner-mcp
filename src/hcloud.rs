@@ -20,12 +20,21 @@ pub struct HcloudClient {
 }
 
 impl HcloudClient {
-    /// Read `HCLOUD_TOKEN` (required) and `HCLOUD_ENDPOINT` (optional base
-    /// URL override, same convention as the official hcloud CLI).
-    pub fn from_env() -> Result<Self> {
-        let token = std::env::var("HCLOUD_TOKEN")
-            .context("HCLOUD_TOKEN environment variable is required")?;
+    /// Build a client for `token` against `HCLOUD_ENDPOINT` (optional base
+    /// URL override, same convention as the official hcloud CLI) or the real
+    /// API. The caller resolves `HCLOUD_TOKEN` (single- or multi-project).
+    pub fn from_env(token: impl Into<String>) -> Result<Self> {
         Self::new(endpoint(std::env::var("HCLOUD_ENDPOINT").ok()), token)
+    }
+
+    /// Clone this client with a different project's token, sharing the same
+    /// underlying `reqwest::Client` (and its connection pool) - swapping
+    /// projects per call must not rebuild the HTTP layer each time.
+    pub fn with_token(&self, token: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+            ..self.clone()
+        }
     }
 
     /// Build a client against any base URL (tests point this at wiremock).
@@ -186,6 +195,24 @@ mod tests {
         let body = "x".repeat(600);
         let s = api_error_summary(&body);
         assert!(s.chars().count() == MAX_ERROR_BODY_CHARS + 1 && s.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn with_token_swaps_only_the_bearer_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/locations"))
+            .and(header("authorization", "Bearer other-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "locations": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = HcloudClient::new(server.uri(), "test-token").unwrap();
+        let swapped = client.with_token("other-token");
+        let v = swapped.get("/locations", &[]).await.unwrap();
+        assert_eq!(v["locations"], serde_json::json!([]));
     }
 
     #[tokio::test]
