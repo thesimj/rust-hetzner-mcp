@@ -65,8 +65,9 @@ pub(crate) struct GetServerMetricsArgs {
     pub start: String,
     /// End of the period to fetch (RFC3339).
     pub end: String,
-    /// Resolution of results in seconds; the API picks one if omitted.
-    pub step: Option<f64>,
+    /// Resolution of results in seconds (spec types this as a string); the
+    /// API picks one if omitted.
+    pub step: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -95,6 +96,7 @@ impl HcloudServer {
         the full existing set, not a merge.",
         annotations(
             title = "Update server",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -150,7 +152,7 @@ impl HcloudServer {
             query.push(("type", t));
         }
         if let Some(step) = args.step {
-            query.push(("step", step.to_string()));
+            query.push(("step", step));
         }
         respond(
             self.client
@@ -166,10 +168,12 @@ impl HcloudServer {
         disable_backup, disable_rescue, enable_backup, enable_rescue, poweroff, \
         poweron, reboot, rebuild, remove_from_placement_group, request_console, \
         reset, reset_password, shutdown. rebuild replaces the disk and destroys \
-        its data; create_image creates a BILLABLE snapshot; change_type requires \
-        the server powered off; reset is an ungraceful hard power cycle, not a \
-        clean reboot; for poweron/poweroff/reboot/shutdown use power_server. \
-        params carries the per-action request body (e.g. {\"image\": \
+        its data; create_image creates a BILLABLE snapshot; enable_backup is \
+        BILLABLE - it raises the server's price by 20%; reset_password returns a \
+        new root_password exactly once - it is not retrievable afterwards; \
+        change_type requires the server powered off; reset is an ungraceful hard \
+        power cycle, not a clean reboot; for poweron/poweroff/reboot/shutdown use \
+        power_server. params carries the per-action request body (e.g. {\"image\": \
         \"ubuntu-24.04\"} for rebuild); omit it for actions with no body.",
         annotations(
             title = "Run server action",
@@ -351,7 +355,7 @@ mod tests {
                     r#type: vec!["cpu".into(), "disk".into()],
                     start: "2024-01-01T00:00:00Z".into(),
                     end: "2024-01-02T00:00:00Z".into(),
-                    step: Some(60.0),
+                    step: Some("60".into()),
                 }))
                 .await
                 .unwrap();
@@ -650,5 +654,28 @@ mod tests {
             );
         }
         assert_eq!(titles.len(), 6, "every tool must have a distinct title");
+    }
+
+    /// W1.4: the billing and one-time-password notes must actually be in the
+    /// wire-visible tool description (cloud.spec.json
+    /// paths./servers/{id}/actions/enable_backup.post.description and
+    /// .../reset_password.post.description), not just in a code comment.
+    #[test]
+    fn server_action_description_notes_enable_backup_pricing_and_reset_password() {
+        let router = super::HcloudServer::servers_ops_router();
+        let desc = router
+            .get("server_action")
+            .unwrap()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.contains("enable_backup") && desc.contains("20%"),
+            "got: {desc}"
+        );
+        assert!(
+            desc.contains("reset_password") && desc.contains("root_password"),
+            "got: {desc}"
+        );
     }
 }

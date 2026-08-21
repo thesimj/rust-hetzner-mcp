@@ -13,24 +13,19 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, IdArgs, pagination_query, push_param, respond};
+use super::{HcloudServer, IdArgs, PageArgs, pagination_query, push_param, respond};
 
-/// Pagination shared by list tools with no label filter.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct PageArgs {
-    /// Page number to fetch, 1-based.
-    #[schemars(range(min = 1))]
-    pub page: Option<u32>,
-    /// Results per page, up to 50 (API default 25).
-    #[schemars(range(min = 1, max = 50))]
-    pub per_page: Option<u32>,
-}
-
-/// Pagination plus label filter shared by list tools that support it.
+/// Pagination plus name/label/sort filters, shared by list_networks and
+/// list_firewalls (identical filter sets per spec). list_volumes adds
+/// `status` on top of this shape, so it gets its own struct.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LabelPageArgs {
+    /// Exact name to filter by.
+    pub name: Option<String>,
     /// Label selector to filter results, e.g. "env=prod".
     pub label_selector: Option<String>,
+    /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
+    pub sort: Option<Vec<String>>,
     /// Page number to fetch, 1-based.
     #[schemars(range(min = 1))]
     pub page: Option<u32>,
@@ -39,10 +34,34 @@ pub(crate) struct LabelPageArgs {
     pub per_page: Option<u32>,
 }
 
-fn label_page_query(args: LabelPageArgs) -> Vec<(&'static str, String)> {
-    let mut q = pagination_query(args.page, args.per_page);
+fn label_page_query(args: LabelPageArgs) -> Result<Vec<(&'static str, String)>, ErrorData> {
+    let mut q = pagination_query(args.page, args.per_page)?;
+    push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
-    q
+    for sort in args.sort.into_iter().flatten() {
+        push_param(&mut q, "sort", Some(sort));
+    }
+    Ok(q)
+}
+
+/// Filters for list_volumes: name/label/sort plus a `status` filter the
+/// other two label_page_query tools don't support.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListVolumesArgs {
+    /// Exact name to filter by.
+    pub name: Option<String>,
+    /// Label selector to filter results, e.g. "env=prod".
+    pub label_selector: Option<String>,
+    /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
+    pub sort: Option<Vec<String>>,
+    /// Filter by status, e.g. "available" or "creating"; repeatable.
+    pub status: Option<Vec<String>>,
+    /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
 }
 
 #[tool_router(router = infra_router, vis = "pub(crate)")]
@@ -60,7 +79,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page);
+        let query = pagination_query(args.page, args.per_page)?;
         respond(self.client.get("/locations", &query).await)
     }
 
@@ -97,7 +116,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page);
+        let query = pagination_query(args.page, args.per_page)?;
         respond(self.client.get("/datacenters", &query).await)
     }
 
@@ -132,9 +151,17 @@ impl HcloudServer {
     )]
     async fn list_volumes(
         &self,
-        Parameters(args): Parameters<LabelPageArgs>,
+        Parameters(args): Parameters<ListVolumesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = label_page_query(args);
+        let mut query = pagination_query(args.page, args.per_page)?;
+        push_param(&mut query, "name", args.name);
+        push_param(&mut query, "label_selector", args.label_selector);
+        for sort in args.sort.into_iter().flatten() {
+            push_param(&mut query, "sort", Some(sort));
+        }
+        for status in args.status.into_iter().flatten() {
+            push_param(&mut query, "status", Some(status));
+        }
         respond(self.client.get("/volumes", &query).await)
     }
 
@@ -167,7 +194,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = label_page_query(args);
+        let query = label_page_query(args)?;
         respond(self.client.get("/networks", &query).await)
     }
 
@@ -204,7 +231,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<LabelPageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = label_page_query(args);
+        let query = label_page_query(args)?;
         respond(self.client.get("/firewalls", &query).await)
     }
 
@@ -236,7 +263,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::test_support::{server_for, tool_result_json};
-    use super::{IdArgs, LabelPageArgs, PageArgs};
+    use super::{IdArgs, LabelPageArgs, ListVolumesArgs, PageArgs};
 
     /// Every list_* tool forwards page/per_page (and label_selector, where the
     /// tool takes one) verbatim, and passes the response envelope through.
@@ -263,7 +290,10 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/volumes"))
+            .and(query_param("name", "data-1"))
             .and(query_param("label_selector", "env=prod"))
+            .and(query_param("sort", "id:asc"))
+            .and(query_param("status", "available"))
             .and(query_param("page", "3"))
             .and(query_param("per_page", "10"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -273,7 +303,9 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/networks"))
+            .and(query_param("name", "net-1"))
             .and(query_param("label_selector", "team=x"))
+            .and(query_param("sort", "name:asc"))
             .and(query_param("page", "4"))
             .and(query_param("per_page", "15"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -283,7 +315,9 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/firewalls"))
+            .and(query_param("name", "fw-1"))
             .and(query_param("label_selector", "app=y"))
+            .and(query_param("sort", "name:desc"))
             .and(query_param("page", "5"))
             .and(query_param("per_page", "20"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -320,8 +354,11 @@ mod tests {
         assert_eq!(
             tool_result_json(
                 &hcloud
-                    .list_volumes(Parameters(LabelPageArgs {
+                    .list_volumes(Parameters(ListVolumesArgs {
+                        name: Some("data-1".to_string()),
                         label_selector: Some("env=prod".to_string()),
+                        sort: Some(vec!["id:asc".to_string()]),
+                        status: Some(vec!["available".to_string()]),
                         page: Some(3),
                         per_page: Some(10)
                     }))
@@ -334,7 +371,9 @@ mod tests {
             tool_result_json(
                 &hcloud
                     .list_networks(Parameters(LabelPageArgs {
+                        name: Some("net-1".to_string()),
                         label_selector: Some("team=x".to_string()),
+                        sort: Some(vec!["name:asc".to_string()]),
                         page: Some(4),
                         per_page: Some(15)
                     }))
@@ -347,7 +386,9 @@ mod tests {
             tool_result_json(
                 &hcloud
                     .list_firewalls(Parameters(LabelPageArgs {
+                        name: Some("fw-1".to_string()),
                         label_selector: Some("app=y".to_string()),
+                        sort: Some(vec!["name:desc".to_string()]),
                         page: Some(5),
                         per_page: Some(20)
                     }))
@@ -374,8 +415,11 @@ mod tests {
 
         let hcloud = server_for(server.uri());
         let res = hcloud
-            .list_volumes(Parameters(LabelPageArgs {
+            .list_volumes(Parameters(ListVolumesArgs {
+                name: None,
                 label_selector: Some(String::new()),
+                sort: None,
+                status: None,
                 page: None,
                 per_page: None,
             }))

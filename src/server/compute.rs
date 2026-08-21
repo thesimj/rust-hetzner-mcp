@@ -16,20 +16,9 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, pagination_query, push_param, respond};
+use super::{HcloudServer, IdArgs, PageArgs, pagination_query, push_param, respond};
 
 const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
-
-/// `page`/`per_page` pagination, shared by the list tools with no other filters.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct PageArgs {
-    /// Page number, 1-based.
-    #[schemars(range(min = 1))]
-    pub page: Option<u32>,
-    /// Results per page (default 25, max 50).
-    #[schemars(range(min = 1, max = 50))]
-    pub per_page: Option<u32>,
-}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ListServersArgs {
@@ -49,6 +38,14 @@ pub(crate) struct ListServersArgs {
     pub per_page: Option<u32>,
 }
 
+/// `{"firewall": <id>}` per firewalls item in the spec's POST /servers body
+/// (cloud.spec.json paths./servers.post.requestBody...properties.firewalls.items).
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct CreateServerFirewall {
+    /// ID of the firewall to apply.
+    pub firewall: u64,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct CreateServerArgs {
     /// Name for the new server.
@@ -60,9 +57,6 @@ pub(crate) struct CreateServerArgs {
     /// Location name to create the server in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
-    /// Datacenter name to create the server in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub datacenter: Option<String>,
     /// SSH key names or IDs to install on the server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_keys: Option<Vec<String>>,
@@ -75,6 +69,26 @@ pub(crate) struct CreateServerArgs {
     /// Whether to start the server right after creation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_after_create: Option<bool>,
+    /// Public network options, e.g. {"enable_ipv4": true, "enable_ipv6": true}.
+    /// enable_ipv4 defaults to true and, unless an existing `ipv4` Primary IP
+    /// is given, creates and bills a new one; forwarded to the API as-is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_net: Option<serde_json::Value>,
+    /// Network IDs to attach the server's private network interface to at creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub networks: Option<Vec<u64>>,
+    /// Firewalls to apply to the server's public network interface at creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firewalls: Option<Vec<CreateServerFirewall>>,
+    /// Volume IDs to attach to the server at creation time; must be in the same location.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<Vec<u64>>,
+    /// ID of the placement group the server should be in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement_group: Option<u64>,
+    /// Auto-mount volumes after attach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automount: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -90,6 +104,36 @@ pub(crate) struct ListImagesArgs {
     /// Filter by image type, e.g. "system" or "snapshot".
     #[serde(rename = "type")]
     pub r#type: Option<String>,
+    /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
+    pub sort: Option<Vec<String>>,
+    /// Filter by status, e.g. "available" or "creating"; repeatable.
+    pub status: Option<Vec<String>>,
+    /// Filter by the server ID the image is bound to.
+    pub bound_to: Option<Vec<String>>,
+    /// Include deprecated images in the results.
+    pub include_deprecated: Option<bool>,
+    /// Exact image name to filter by.
+    pub name: Option<String>,
+    /// Label selector, e.g. "env=prod".
+    pub label_selector: Option<String>,
+    /// Page number, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page (default 25, max 50).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListSshKeysArgs {
+    /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
+    pub sort: Option<Vec<String>>,
+    /// Exact SSH key name to filter by.
+    pub name: Option<String>,
+    /// Exact fingerprint to filter by.
+    pub fingerprint: Option<String>,
+    /// Label selector, e.g. "env=prod".
+    pub label_selector: Option<String>,
     /// Page number, 1-based.
     #[schemars(range(min = 1))]
     pub page: Option<u32>,
@@ -124,7 +168,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ListServersArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut query = pagination_query(args.page, args.per_page);
+        let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
         for status in args.status.into_iter().flatten() {
@@ -153,7 +197,9 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Create a new server. This creates a BILLABLE resource. The response \
+        description = "Create a new server. This creates a BILLABLE resource. public_net's \
+        enable_ipv4 defaults to true and, unless public_net.ipv4 names an existing Primary IP, \
+        creates and bills a new one; set enable_ipv4 to false to skip it. The response \
         contains the root_password exactly once - it is not retrievable afterwards.",
         annotations(
             title = "Create server",
@@ -235,8 +281,22 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ListImagesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut query = pagination_query(args.page, args.per_page);
+        let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "type", args.r#type);
+        push_param(&mut query, "name", args.name);
+        push_param(&mut query, "label_selector", args.label_selector);
+        if let Some(true) = args.include_deprecated {
+            push_param(&mut query, "include_deprecated", Some("true".to_string()));
+        }
+        for status in args.status.into_iter().flatten() {
+            push_param(&mut query, "status", Some(status));
+        }
+        for bound_to in args.bound_to.into_iter().flatten() {
+            push_param(&mut query, "bound_to", Some(bound_to));
+        }
+        for sort in args.sort.into_iter().flatten() {
+            push_param(&mut query, "sort", Some(sort));
+        }
         respond(self.client.get("/images", &query).await)
     }
 
@@ -269,7 +329,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<PageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page);
+        let query = pagination_query(args.page, args.per_page)?;
         respond(self.client.get("/server_types", &query).await)
     }
 
@@ -300,9 +360,15 @@ impl HcloudServer {
     )]
     pub(crate) async fn list_ssh_keys(
         &self,
-        Parameters(args): Parameters<PageArgs>,
+        Parameters(args): Parameters<ListSshKeysArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page);
+        let mut query = pagination_query(args.page, args.per_page)?;
+        push_param(&mut query, "name", args.name);
+        push_param(&mut query, "fingerprint", args.fingerprint);
+        push_param(&mut query, "label_selector", args.label_selector);
+        for sort in args.sort.into_iter().flatten() {
+            push_param(&mut query, "sort", Some(sort));
+        }
         respond(self.client.get("/ssh_keys", &query).await)
     }
 
@@ -481,11 +547,16 @@ mod tests {
                 server_type: "cx22".into(),
                 image: "ubuntu-24.04".into(),
                 location: None,
-                datacenter: None,
                 ssh_keys: None,
                 user_data: None,
                 labels: None,
                 start_after_create: None,
+                public_net: None,
+                networks: None,
+                firewalls: None,
+                volumes: None,
+                placement_group: None,
+                automount: None,
             }))
             .await
             .unwrap();
@@ -509,7 +580,13 @@ mod tests {
                 "location": "fsn1",
                 "ssh_keys": ["my-key"],
                 "labels": {"env": "prod"},
-                "start_after_create": false
+                "start_after_create": false,
+                "public_net": {"enable_ipv4": true, "enable_ipv6": false},
+                "networks": [42],
+                "firewalls": [{"firewall": 7}],
+                "volumes": [99],
+                "placement_group": 3,
+                "automount": true
             })))
             .respond_with(
                 ResponseTemplate::new(201).set_body_json(serde_json::json!({"server": {"id": 2}})),
@@ -524,11 +601,16 @@ mod tests {
                 server_type: "cx22".into(),
                 image: "ubuntu-24.04".into(),
                 location: Some("fsn1".into()),
-                datacenter: None,
                 ssh_keys: Some(vec!["my-key".into()]),
                 user_data: None,
                 labels: Some(labels),
                 start_after_create: Some(false),
+                public_net: Some(serde_json::json!({"enable_ipv4": true, "enable_ipv6": false})),
+                networks: Some(vec![42]),
+                firewalls: Some(vec![CreateServerFirewall { firewall: 7 }]),
+                volumes: Some(vec![99]),
+                placement_group: Some(3),
+                automount: Some(true),
             }))
             .await
             .unwrap();
@@ -611,6 +693,49 @@ mod tests {
         let res = server
             .list_images(Parameters(ListImagesArgs {
                 r#type: Some("snapshot".into()),
+                sort: None,
+                status: None,
+                bound_to: None,
+                include_deprecated: None,
+                name: None,
+                label_selector: None,
+                page: None,
+                per_page: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"images": []}));
+    }
+
+    /// W1.5: list_images' new filters (sort, status, bound_to,
+    /// include_deprecated, name, label_selector) reach the wire.
+    #[tokio::test]
+    async fn list_images_passes_the_new_filters() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/images"))
+            .and(query_param("sort", "name:asc"))
+            .and(query_param("status", "available"))
+            .and(query_param("bound_to", "5"))
+            .and(query_param("include_deprecated", "true"))
+            .and(query_param("name", "ubuntu-24.04"))
+            .and(query_param("label_selector", "env=prod"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"images": []})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .list_images(Parameters(ListImagesArgs {
+                r#type: None,
+                sort: Some(vec!["name:asc".into()]),
+                status: Some(vec!["available".into()]),
+                bound_to: Some(vec!["5".into()]),
+                include_deprecated: Some(true),
+                name: Some("ubuntu-24.04".into()),
+                label_selector: Some("env=prod".into()),
                 page: None,
                 per_page: None,
             }))
@@ -703,7 +828,43 @@ mod tests {
 
         let server = server_for(mock.uri());
         let res = server
-            .list_ssh_keys(Parameters(PageArgs {
+            .list_ssh_keys(Parameters(ListSshKeysArgs {
+                sort: None,
+                name: None,
+                fingerprint: None,
+                label_selector: None,
+                page: None,
+                per_page: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(tool_result_json(&res), serde_json::json!({"ssh_keys": []}));
+    }
+
+    /// W1.5: list_ssh_keys' new filters (sort, name, fingerprint,
+    /// label_selector) reach the wire as query params.
+    #[tokio::test]
+    async fn list_ssh_keys_passes_the_new_filters() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ssh_keys"))
+            .and(query_param("sort", "name:asc"))
+            .and(query_param("name", "laptop"))
+            .and(query_param("fingerprint", "aa:bb"))
+            .and(query_param("label_selector", "env=prod"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"ssh_keys": []})),
+            )
+            .mount(&mock)
+            .await;
+
+        let server = server_for(mock.uri());
+        let res = server
+            .list_ssh_keys(Parameters(ListSshKeysArgs {
+                sort: Some(vec!["name:asc".into()]),
+                name: Some("laptop".into()),
+                fingerprint: Some("aa:bb".into()),
+                label_selector: Some("env=prod".into()),
                 page: None,
                 per_page: None,
             }))
@@ -821,5 +982,35 @@ mod tests {
                 "{name} must be destructive_hint = {destructive}"
             );
         }
+    }
+
+    /// W1.1: the API deleted `datacenter` from POST /servers (2026-07-01);
+    /// the wire-visible schema must not offer it, and must offer the six
+    /// fields the spec adds instead.
+    #[test]
+    fn create_server_schema_drops_datacenter_and_gains_the_new_fields() {
+        let router = super::HcloudServer::compute_router();
+        let props = router.get("create_server").unwrap().input_schema["properties"]
+            .as_object()
+            .unwrap();
+        assert!(!props.contains_key("datacenter"), "got: {props:?}");
+        for field in [
+            "public_net",
+            "networks",
+            "firewalls",
+            "volumes",
+            "placement_group",
+            "automount",
+        ] {
+            assert!(props.contains_key(field), "missing {field}: {props:?}");
+        }
+    }
+
+    /// W1.1/E5: a firewalls entry serializes as `{"firewall": <id>}`, per
+    /// cloud.spec.json paths./servers.post.requestBody...properties.firewalls.items.
+    #[test]
+    fn create_server_firewall_item_serializes_to_the_spec_shape() {
+        let wire = serde_json::to_value(CreateServerFirewall { firewall: 38 }).unwrap();
+        assert_eq!(wire, serde_json::json!({"firewall": 38}));
     }
 }

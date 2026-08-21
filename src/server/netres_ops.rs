@@ -12,9 +12,9 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use super::{HcloudServer, IdArgs, action_body, require_update_fields, respond};
+use super::{ActionArgs, HcloudServer, IdArgs, action_body, require_update_fields, respond};
 
 const NETWORK_ACTIONS: [&str; 6] = [
     "add_route",
@@ -28,20 +28,6 @@ const FIREWALL_ACTIONS: [&str; 3] = ["apply_to_resources", "remove_from_resource
 const FLOATING_IP_ACTIONS: [&str; 4] =
     ["assign", "unassign", "change_dns_ptr", "change_protection"];
 const PRIMARY_IP_ACTIONS: [&str; 4] = ["assign", "unassign", "change_dns_ptr", "change_protection"];
-
-/// Shape shared by all four `*_action` tools: an allowlisted action name
-/// plus an optional passthrough body. The allowlist differs per tool and is
-/// enforced in the tool body, not the schema.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ActionArgs {
-    /// Numeric ID of the resource to act on.
-    pub id: u64,
-    /// Action name; see this tool's description for the allowed values.
-    pub action: String,
-    /// Action-specific request body (a JSON object), forwarded to the API
-    /// as-is. Omit for actions that take no parameters (e.g. unassign).
-    pub params: Option<Map<String, Value>>,
-}
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct CreateNetworkArgs {
@@ -212,6 +198,7 @@ impl HcloudServer {
         replace the full existing set, not a merge.",
         annotations(
             title = "Update network",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -304,6 +291,7 @@ impl HcloudServer {
         existing set, not a merge.",
         annotations(
             title = "Update firewall",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -372,7 +360,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Create a Floating IP. This creates a BILLABLE resource.",
+        description = "Create a Floating IP. This creates a BILLABLE resource. home_location \
+        is required unless server is given.",
         annotations(
             title = "Create Floating IP",
             read_only_hint = false,
@@ -384,6 +373,12 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateFloatingIpArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if args.home_location.is_none() && args.server.is_none() {
+            return Err(ErrorData::invalid_params(
+                "home_location is required when server is not given",
+                None,
+            ));
+        }
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         respond(self.client.post("/floating_ips", body).await)
@@ -394,6 +389,7 @@ impl HcloudServer {
         replace the full existing set, not a merge.",
         annotations(
             title = "Update Floating IP",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -461,7 +457,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Create a Primary IP. This creates a BILLABLE resource.",
+        description = "Create a Primary IP. This creates a BILLABLE resource. location is \
+        required unless assignee_id is given.",
         annotations(
             title = "Create Primary IP",
             read_only_hint = false,
@@ -473,6 +470,12 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreatePrimaryIpArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if args.location.is_none() && args.assignee_id.is_none() {
+            return Err(ErrorData::invalid_params(
+                "location is required when assignee_id is not given",
+                None,
+            ));
+        }
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         respond(self.client.post("/primary_ips", body).await)
@@ -483,6 +486,7 @@ impl HcloudServer {
         replace the full existing set, not a merge.",
         annotations(
             title = "Update Primary IP",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -562,7 +566,7 @@ mod tests {
 
     /// ActionArgs.params is object-typed (N2); tests build it from a JSON
     /// object literal for readability.
-    fn map_of(v: serde_json::Value) -> Map<String, Value> {
+    fn map_of(v: serde_json::Value) -> serde_json::Map<String, Value> {
         v.as_object().expect("object literal").clone()
     }
 
@@ -783,11 +787,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_floating_ip_sends_exactly_the_required_fields_when_optionals_are_unset() {
+    async fn create_floating_ip_sends_exactly_the_required_fields_when_server_covers_location() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/floating_ips"))
-            .and(body_json(serde_json::json!({"type": "ipv4"})))
+            .and(body_json(serde_json::json!({"type": "ipv4", "server": 7})))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "floating_ip": {"id": 1}
             })))
@@ -799,7 +803,7 @@ mod tests {
             .create_floating_ip(Parameters(CreateFloatingIpArgs {
                 r#type: "ipv4".into(),
                 home_location: None,
-                server: None,
+                server: Some(7),
                 description: None,
                 name: None,
                 labels: None,
@@ -810,6 +814,24 @@ mod tests {
             tool_result_json(&res),
             serde_json::json!({"floating_ip": {"id": 1}})
         );
+    }
+
+    /// W1.2: home_location is required when server is not given - rejected
+    /// before any request is attempted (dead-port proof).
+    #[tokio::test]
+    async fn create_floating_ip_rejects_when_neither_home_location_nor_server_is_given() {
+        let err = server_for("http://127.0.0.1:9".to_string())
+            .create_floating_ip(Parameters(CreateFloatingIpArgs {
+                r#type: "ipv4".into(),
+                home_location: None,
+                server: None,
+                description: None,
+                name: None,
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     /// Sets every optional field; see create_network's twin for why.
@@ -884,12 +906,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_primary_ip_sends_exactly_the_required_fields_when_optionals_are_unset() {
+    async fn create_primary_ip_sends_exactly_the_required_fields_when_assignee_covers_location() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/primary_ips"))
             .and(body_json(serde_json::json!({
-                "name": "pip-1", "type": "ipv4"
+                "name": "pip-1", "type": "ipv4", "assignee_type": "server", "assignee_id": 42
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "primary_ip": {"id": 1}
@@ -902,8 +924,8 @@ mod tests {
             .create_primary_ip(Parameters(CreatePrimaryIpArgs {
                 name: "pip-1".into(),
                 r#type: "ipv4".into(),
-                assignee_type: None,
-                assignee_id: None,
+                assignee_type: Some("server".into()),
+                assignee_id: Some(42),
                 location: None,
                 auto_delete: None,
                 labels: None,
@@ -914,6 +936,25 @@ mod tests {
             tool_result_json(&res),
             serde_json::json!({"primary_ip": {"id": 1}})
         );
+    }
+
+    /// W1.2: location is required when assignee_id is not given - rejected
+    /// before any request is attempted (dead-port proof).
+    #[tokio::test]
+    async fn create_primary_ip_rejects_when_neither_location_nor_assignee_id_is_given() {
+        let err = server_for("http://127.0.0.1:9".to_string())
+            .create_primary_ip(Parameters(CreatePrimaryIpArgs {
+                name: "pip-1".into(),
+                r#type: "ipv4".into(),
+                assignee_type: None,
+                assignee_id: None,
+                location: None,
+                auto_delete: None,
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     /// Sets every optional field; see create_network's twin for why.

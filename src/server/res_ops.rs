@@ -15,41 +15,13 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, action_body, require_update_fields, respond};
+use super::{
+    ActionArgs, HcloudServer, IdArgs, action_body, check_action, require_update_fields, respond,
+};
 
 const IMAGE_ACTIONS: [&str; 1] = ["change_protection"];
 const VOLUME_ACTIONS: [&str; 4] = ["attach", "detach", "resize", "change_protection"];
 const CERTIFICATE_ACTIONS: [&str; 1] = ["retry"];
-
-/// Reject an action name not in the tool's allowlist before it reaches the
-/// URL, mirroring compute.rs's `POWER_ACTIONS` check.
-fn check_action(action: &str, allowed: &[&str]) -> Result<(), ErrorData> {
-    if allowed.contains(&action) {
-        Ok(())
-    } else {
-        Err(ErrorData::invalid_params(
-            format!(
-                "action must be one of {}, got {:?}",
-                allowed.join(", "),
-                action
-            ),
-            None,
-        ))
-    }
-}
-
-/// Action name plus optional action-specific parameters, shared by every
-/// `*_action` tool - the allowed action set differs per tool, so validation
-/// stays in each tool body rather than on this shape.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ActionArgs {
-    /// Numeric ID of the resource to act on.
-    pub id: u64,
-    /// Action name; see the tool description for the allowed set.
-    pub action: String,
-    /// Action-specific parameters object, e.g. `{"delete": true}` for change_protection.
-    pub params: Option<serde_json::Map<String, serde_json::Value>>,
-}
 
 /// Body shared by every update tool that only ever sets `name`/`labels`
 /// (ssh_key, volume, placement_group, certificate).
@@ -145,6 +117,7 @@ impl HcloudServer {
         the full existing set, not a merge.",
         annotations(
             title = "Update image",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -190,7 +163,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        check_action(&args.action, &IMAGE_ACTIONS)?;
+        check_action(&IMAGE_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -206,6 +179,7 @@ impl HcloudServer {
         existing set, not a merge.",
         annotations(
             title = "Update SSH key",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -223,7 +197,9 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Create a new block storage volume. This creates a BILLABLE resource.",
+        description = "Create a new block storage volume. This creates a BILLABLE resource. \
+        location is required unless server is given (the volume is then created in that \
+        server's location).",
         annotations(
             title = "Create volume",
             read_only_hint = false,
@@ -235,6 +211,12 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateVolumeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if args.location.is_none() && args.server.is_none() {
+            return Err(ErrorData::invalid_params(
+                "location is required when server is not given",
+                None,
+            ));
+        }
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         respond(self.client.post("/volumes", body).await)
@@ -245,6 +227,7 @@ impl HcloudServer {
         existing set, not a merge.",
         annotations(
             title = "Update volume",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -292,7 +275,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        check_action(&args.action, &VOLUME_ACTIONS)?;
+        check_action(&VOLUME_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -326,6 +309,7 @@ impl HcloudServer {
         full existing set, not a merge.",
         annotations(
             title = "Update placement group",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -363,7 +347,9 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "Upload a certificate, or request a managed Let's Encrypt certificate.",
+        description = "Upload a certificate, or request a managed Let's Encrypt certificate. \
+        type \"uploaded\" requires certificate and private_key; type \"managed\" requires \
+        domain_names.",
         annotations(
             title = "Create certificate",
             read_only_hint = false,
@@ -375,6 +361,21 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateCertificateArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        match args.r#type.as_deref() {
+            Some("uploaded") if args.certificate.is_none() || args.private_key.is_none() => {
+                return Err(ErrorData::invalid_params(
+                    "certificate and private_key are required for type \"uploaded\"",
+                    None,
+                ));
+            }
+            Some("managed") if args.domain_names.as_ref().is_none_or(|d| d.is_empty()) => {
+                return Err(ErrorData::invalid_params(
+                    "domain_names is required for type \"managed\"",
+                    None,
+                ));
+            }
+            _ => {}
+        }
         let body = serde_json::to_value(&args)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         respond(self.client.post("/certificates", body).await)
@@ -385,6 +386,7 @@ impl HcloudServer {
         existing set, not a merge.",
         annotations(
             title = "Update certificate",
+            idempotent_hint = true,
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = true
@@ -431,7 +433,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<ActionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        check_action(&args.action, &CERTIFICATE_ACTIONS)?;
+        check_action(&CERTIFICATE_ACTIONS, &args.action)?;
         respond(
             self.client
                 .post(
@@ -699,11 +701,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_volume_sends_exactly_the_required_fields_when_optionals_are_unset() {
+    async fn create_volume_sends_exactly_the_required_fields_when_server_covers_location() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/volumes"))
-            .and(body_json(serde_json::json!({"size": 20, "name": "data-1"})))
+            .and(body_json(
+                serde_json::json!({"size": 20, "name": "data-1", "server": 7}),
+            ))
             .respond_with(
                 ResponseTemplate::new(201).set_body_json(serde_json::json!({"volume": {"id": 1}})),
             )
@@ -716,7 +720,7 @@ mod tests {
                 size: 20,
                 name: "data-1".into(),
                 location: None,
-                server: None,
+                server: Some(7),
                 automount: None,
                 format: None,
                 labels: None,
@@ -727,6 +731,25 @@ mod tests {
             tool_result_json(&res),
             serde_json::json!({"volume": {"id": 1}})
         );
+    }
+
+    /// W1.2: location is required when server is not given - rejected before
+    /// any request is attempted (dead-port proof).
+    #[tokio::test]
+    async fn create_volume_rejects_when_neither_location_nor_server_is_given() {
+        let err = server_for("http://127.0.0.1:9".to_string())
+            .create_volume(Parameters(CreateVolumeArgs {
+                size: 20,
+                name: "data-1".into(),
+                location: None,
+                server: None,
+                automount: None,
+                format: None,
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -861,6 +884,42 @@ mod tests {
             tool_result_json(&res),
             serde_json::json!({"certificate": {"id": 2}})
         );
+    }
+
+    /// W1.2: type "uploaded" without certificate/private_key is rejected
+    /// before any request is attempted (dead-port proof).
+    #[tokio::test]
+    async fn create_certificate_rejects_uploaded_without_certificate_and_key() {
+        let err = server_for("http://127.0.0.1:9".to_string())
+            .create_certificate(Parameters(CreateCertificateArgs {
+                name: "cert-3".into(),
+                r#type: Some("uploaded".into()),
+                certificate: None,
+                private_key: None,
+                domain_names: None,
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// W1.2: type "managed" without domain_names is rejected before any
+    /// request is attempted (dead-port proof).
+    #[tokio::test]
+    async fn create_certificate_rejects_managed_without_domain_names() {
+        let err = server_for("http://127.0.0.1:9".to_string())
+            .create_certificate(Parameters(CreateCertificateArgs {
+                name: "cert-4".into(),
+                r#type: Some("managed".into()),
+                certificate: None,
+                private_key: None,
+                domain_names: None,
+                labels: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     /// F2: pins each allowlist to its exact expected array (via `.to_vec()`
