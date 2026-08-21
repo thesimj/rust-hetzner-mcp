@@ -22,6 +22,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BIN_NAME = "hetzner-mcp";
+// Version-pinned: this tool validates and packs the shipped artifact, so it is
+// frozen the same way the workflow's third-party actions are SHA-pinned.
+const MCPB_CLI = "@anthropic-ai/mcpb@2.1.2";
 
 // Map Node's process.platform to a friendly OS slug + manifest values.
 //
@@ -112,10 +115,10 @@ function main() {
   buildBinary(stageBinDir);
 
   console.log("==> Validating manifest");
-  npx(["-y", "@anthropic-ai/mcpb", "validate", join(stageDir, "manifest.json")]);
+  npx(["-y", MCPB_CLI, "validate", join(stageDir, "manifest.json")]);
 
   console.log("==> Packing .mcpb");
-  npx(["-y", "@anthropic-ai/mcpb", "pack", stageDir, outFile]);
+  npx(["-y", MCPB_CLI, "pack", stageDir, outFile]);
 
   rmSync(stageDir, { recursive: true, force: true });
   console.log(`==> Done: ${outFile}`);
