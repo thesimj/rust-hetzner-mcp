@@ -13,6 +13,37 @@ use super::test_support::project_token;
 use super::{HcloudServer, Projects};
 use crate::hcloud::HcloudClient;
 
+/// Startup is lazy: building the server and completing the real MCP
+/// handshake (initialize + tools/list) must send zero HTTP requests. The
+/// Hetzner API is first contacted by an actual tools/call, never before.
+#[tokio::test]
+async fn startup_and_handshake_send_no_http_requests() {
+    let mock = wiremock::MockServer::start().await;
+
+    let tokens = BTreeMap::from([("prod".to_string(), project_token("prod"))]);
+    let projects = Projects { tokens, pin: None };
+    let client = HcloudClient::new(mock.uri(), project_token("prod")).unwrap();
+    let server = HcloudServer::new(client, projects);
+
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move {
+        let running = server.serve(server_io).await.expect("server handshake");
+        running.waiting().await.expect("server run loop");
+    });
+
+    let client = ().serve(client_io).await.expect("client handshake");
+    client.list_tools(None).await.expect("tools/list");
+
+    let requests = mock.received_requests().await.unwrap_or_default();
+    assert!(
+        requests.is_empty(),
+        "startup/handshake must not contact the Hetzner API, saw: {requests:?}"
+    );
+
+    client.cancel().await.expect("cancel client");
+    server_task.await.expect("server task");
+}
+
 #[tokio::test]
 async fn initialize_list_and_call_flow_through_the_real_call_tool() {
     let mock = wiremock::MockServer::start().await;
