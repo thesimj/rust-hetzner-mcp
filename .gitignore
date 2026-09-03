@@ -17,7 +17,10 @@ debug/
 # cargo-mutants mutation-testing output
 **/mutants.out*/
 
-# Local secrets (HCLOUD_TOKEN etc.) - never commit
+# Local secrets (config.toml, .env) - never commit; credentials live in
+# ~/.config/hetzner-mcp/config.toml, but a repo-local copy used with
+# `hetzner-mcp --config ./config.toml` must never land in git either.
+/config.toml
 .env
 .env.*
 

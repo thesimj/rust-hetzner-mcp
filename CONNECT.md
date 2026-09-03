@@ -16,34 +16,50 @@ and editor can use it. This guide gives the exact config for the popular ones.
    [Hetzner's guide](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token).
    A **read-only** token is enough for every `list_*`/`get_*` tool; only create
    a read-write token if you need the mutating tools.
+3. **Create the config file** `~/.config/hetzner-mcp/config.toml`
+   (`%USERPROFILE%\.config\hetzner-mcp\config.toml` on Windows) with at least
+   one project, and keep it private:
+   ```bash
+   mkdir -p ~/.config/hetzner-mcp
+   $EDITOR ~/.config/hetzner-mcp/config.toml
+   chmod 600 ~/.config/hetzner-mcp/config.toml
+   ```
+   ```toml
+   [[projects]]
+   name = "main"
+   token = "<64-char token>"
+   ```
+   Full syntax (several projects, `default`, `endpoint`, validation rules):
+   [README > Configuration](README.md#configuration). This file is the only
+   place credentials come from - every client snippet below is command-only.
 
 ## The launch contract (same everywhere)
 
 | Field | Value |
 | --- | --- |
 | command | `hetzner-mcp` |
-| args | (none) |
-| env | `HCLOUD_TOKEN=your-token` |
+| args | (none) - or `["--config", "/abs/path/config.toml"]` to use another file |
+| env | (none) - credentials live in `~/.config/hetzner-mcp/config.toml` |
 
-The binary starts the stdio server directly - there is no subcommand. The token
-must come from the client's `env` block or the process environment; the server
-does **not** read `.env` files. The canonical JSON shape - used by **Claude
-Code, Cursor, Windsurf, Cline, Roo Code, Gemini CLI, Antigravity** - is:
+The binary starts the stdio server directly - there is no subcommand. All
+credentials come from the config file ([README > Configuration](README.md#configuration));
+the server reads no environment variables and no `.env` files. The canonical
+JSON shape - used by **Claude Code, Cursor, Windsurf, Cline, Roo Code, Gemini
+CLI, Antigravity** - is:
 
 ```json
 {
   "mcpServers": {
     "hetzner": {
-      "command": "hetzner-mcp",
-      "env": { "HCLOUD_TOKEN": "your-token" }
+      "command": "hetzner-mcp"
     }
   }
 }
 ```
 
-> 🔐 **Keep your token out of committed files.** Prefer a client's "add" CLI or
-> shell-variable expansion (noted per client) over hardcoding the token into a
-> config you might check into git.
+> 🔐 **Your client config holds no secrets.** Since 0.4.0 the token never
+> appears in a client config, so `.mcp.json`, `.cursor/mcp.json` and friends are
+> safe to commit. Keep `config.toml` itself out of git and at mode `0600`.
 
 ---
 
@@ -53,11 +69,11 @@ Code, Cursor, Windsurf, Cline, Roo Code, Gemini CLI, Antigravity** - is:
 One command (no file editing):
 ```bash
 # this project only (default)
-claude mcp add hetzner --env HCLOUD_TOKEN=your-token -- hetzner-mcp
+claude mcp add hetzner -- hetzner-mcp
 # all your projects
-claude mcp add --scope user hetzner --env HCLOUD_TOKEN=your-token -- hetzner-mcp
+claude mcp add --scope user hetzner -- hetzner-mcp
 # shared with your team (writes a committable .mcp.json)
-claude mcp add --scope project hetzner --env HCLOUD_TOKEN=your-token -- hetzner-mcp
+claude mcp add --scope project hetzner -- hetzner-mcp
 ```
 Project scope writes `.mcp.json` (canonical `mcpServers` shape) and prompts for
 approval on first use. Docs: <https://code.claude.com/docs/en/mcp-quickstart>
@@ -67,27 +83,14 @@ approval on first use. Docs: <https://code.claude.com/docs/en/mcp-quickstart>
 ```toml
 [mcp_servers.hetzner]
 command = "hetzner-mcp"
-
-[mcp_servers.hetzner.env]
-HCLOUD_TOKEN = "your-token"
 ```
-Or: `codex mcp add hetzner --env HCLOUD_TOKEN=your-token -- hetzner-mcp`.
+Or: `codex mcp add hetzner -- hetzner-mcp`.
 Docs: <https://developers.openai.com/codex/mcp>
 
 ### Google Gemini CLI
-`~/.gemini/settings.json` (or `.gemini/settings.json` per project), key `mcpServers`.
-Gemini CLI expands `$VAR` inside `env`, so you can avoid hardcoding:
-```json
-{
-  "mcpServers": {
-    "hetzner": {
-      "command": "hetzner-mcp",
-      "env": { "HCLOUD_TOKEN": "$HCLOUD_TOKEN" }
-    }
-  }
-}
-```
-Or: `gemini mcp add hetzner hetzner-mcp -e HCLOUD_TOKEN=your-token`.
+`~/.gemini/settings.json` (or `.gemini/settings.json` per project), key
+`mcpServers`, canonical shape above.
+Or: `gemini mcp add hetzner hetzner-mcp`.
 Docs: <https://google-gemini.github.io/gemini-cli/docs/tools/mcp-server.html>
 
 ### Google Antigravity
@@ -97,8 +100,7 @@ refresh in *Installed MCP Servers*.
 
 ### opencode
 `opencode.json` (project) or `~/.config/opencode/opencode.json`. **Different shape**:
-key is `mcp`, `type` is `local`, `command` is a **single array**, and env is
-`environment`:
+key is `mcp`, `type` is `local`, and `command` is a **single array**:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -106,8 +108,7 @@ key is `mcp`, `type` is `local`, `command` is a **single array**, and env is
     "hetzner": {
       "type": "local",
       "command": ["hetzner-mcp"],
-      "enabled": true,
-      "environment": { "HCLOUD_TOKEN": "your-token" }
+      "enabled": true
     }
   }
 }
@@ -123,8 +124,7 @@ Docs: <https://opencode.ai/docs/mcp-servers/>
   "mcp": {
     "hetzner": {
       "type": "stdio",
-      "command": "hetzner-mcp",
-      "env": { "HCLOUD_TOKEN": "your-token" }
+      "command": "hetzner-mcp"
     }
   }
 }
@@ -133,7 +133,7 @@ Docs: <https://github.com/charmbracelet/crush>
 
 ### Goose (Block)
 **YAML**, `~/.config/goose/config.yaml`, under `extensions` (note `cmd`, not
-`command`, and `envs`, not `env`):
+`command`):
 ```yaml
 extensions:
   hetzner:
@@ -142,11 +142,9 @@ extensions:
     cmd: hetzner-mcp
     enabled: true
     timeout: 300
-    envs:
-      HCLOUD_TOKEN: "your-token"
 ```
 Easiest: run `goose configure` -> Add Extension -> Command-line Extension (stdio) ->
-command `hetzner-mcp` -> add `HCLOUD_TOKEN`.
+command `hetzner-mcp` (no environment variables needed).
 Docs: <https://goose-docs.ai/docs/getting-started/using-extensions>
 
 ### Amp (Sourcegraph)
@@ -155,8 +153,7 @@ Docs: <https://goose-docs.ai/docs/getting-started/using-extensions>
 {
   "amp.mcpServers": {
     "hetzner": {
-      "command": "hetzner-mcp",
-      "env": { "HCLOUD_TOKEN": "your-token" }
+      "command": "hetzner-mcp"
     }
   }
 }
@@ -168,7 +165,7 @@ Docs: <https://ampcode.com/manual>
 ```toml
 [mcp]
 stdio_servers = [
-  { name = "hetzner", command = "hetzner-mcp", env = { HCLOUD_TOKEN = "your-token" } }
+  { name = "hetzner", command = "hetzner-mcp" }
 ]
 ```
 Docs: <https://docs.openhands.dev/openhands/usage/settings/mcp-settings>
@@ -194,8 +191,7 @@ Docs: <https://docs.devin.ai/desktop/cascade/mcp>
   "servers": {
     "hetzner": {
       "type": "stdio",
-      "command": "hetzner-mcp",
-      "env": { "HCLOUD_TOKEN": "your-token" }
+      "command": "hetzner-mcp"
     }
   }
 }
@@ -208,8 +204,7 @@ Docs: <https://code.visualstudio.com/docs/copilot/customization/mcp-servers>
 {
   "context_servers": {
     "hetzner": {
-      "command": "hetzner-mcp",
-      "env": { "HCLOUD_TOKEN": "your-token" }
+      "command": "hetzner-mcp"
     }
   }
 }
@@ -238,51 +233,60 @@ mcpServers:
   - name: hetzner
     type: stdio
     command: hetzner-mcp
-    env:
-      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
 ```
 Docs: <https://docs.continue.dev/customize/deep-dives/mcp>
 
 ---
 
-## Multiple projects
+## CI runners and containers
 
-`HCLOUD_TOKEN` also accepts comma-separated `name=token` pairs to configure
-more than one Hetzner project at once; `HCLOUD_PROJECT` optionally sets the
-default project. The multi-value form belongs in your MCP client's
-`env` block - the official `hcloud` CLI reads the same variable, cannot parse
-it, and fails with a bare `401`:
+There is no home directory with a hand-written `config.toml` on a fresh runner,
+so write the file from a secret before the agent starts. Store the **whole TOML
+file** in one secret (e.g. `HETZNER_MCP_CONFIG`) and materialise it at the
+default path:
+
+```bash
+mkdir -p ~/.config/hetzner-mcp
+printf '%s\n' "$HETZNER_MCP_CONFIG" > ~/.config/hetzner-mcp/config.toml
+chmod 600 ~/.config/hetzner-mcp/config.toml
+```
+
+In a container, mount the file read-only instead and point the server at it:
 
 ```json
 {
   "mcpServers": {
     "hetzner": {
       "command": "hetzner-mcp",
-      "env": {
-        "HCLOUD_TOKEN": "prod=<64-char-token>,staging=<64-char-token>",
-        "HCLOUD_PROJECT": "prod"
-      }
+      "args": ["--config", "/run/secrets/hetzner-mcp.toml"]
     }
   }
 }
 ```
 
-Full syntax, startup-rejection rules, and the new `list_projects` tool:
+Use an absolute path with `--config` - MCP clients start the server from an
+arbitrary working directory, and every startup error names the resolved path.
+
+## Multiple projects
+
+Add one `[[projects]]` table per Hetzner project to `config.toml`; nothing
+changes on the client side. The `project` argument, the optional `default`
+project, descriptions, and the `list_projects` tool are documented in
 [README.md](README.md#multiple-projects).
 
 ## Format gotchas at a glance
 
-Most clients use `command` + `env` under a `mcpServers` object (`hetzner-mcp`
-needs no `args`). The exceptions:
+Most clients use `command` under a `mcpServers` object (`hetzner-mcp` needs no
+`args` and no `env`). The exceptions:
 
 | Client | Key | Notable difference |
 | --- | --- | --- |
 | VS Code (Copilot) | `servers` | `type: "stdio"` accepted, optional |
 | Zed | `context_servers` | - |
-| Goose | `extensions` | YAML; `cmd` not `command`; `envs` not `env` |
-| opencode | `mcp` | `type: "local"`; `command` is one array; env is `environment` |
+| Goose | `extensions` | YAML; `cmd` not `command` |
+| opencode | `mcp` | `type: "local"`; `command` is one array |
 | Crush | `mcp` | `type: "stdio"` |
-| Codex CLI | `[mcp_servers.*]` | TOML; `env` is a sub-table |
+| Codex CLI | `[mcp_servers.*]` | TOML table |
 | OpenHands | `[mcp] stdio_servers` | TOML array of inline tables |
 | Continue | `mcpServers` (list) | YAML list of `{name, ...}` |
 
@@ -295,6 +299,9 @@ agent to *"list my Hetzner servers"* to confirm `list_servers` runs.
 You can also sanity-check the binary by hand:
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
-  | HCLOUD_TOKEN=your-token hetzner-mcp
+  | hetzner-mcp
 ```
-A JSON line answering with `"name":"hetzner-mcp"` means stdio is healthy.
+A JSON line answering with `"name":"hetzner-mcp"` means stdio is healthy. If
+the client reports *disconnected* instead, run the same line in a terminal: a
+missing or invalid `config.toml` is reported on stderr with the exact path the
+server looked at.

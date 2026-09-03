@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, tool::ToolCallContext},
@@ -19,6 +18,7 @@ use rmcp::{
 };
 use serde_json::Value;
 
+use crate::config::{self, Project};
 use crate::hcloud::HcloudClient;
 
 mod compute;
@@ -35,10 +35,11 @@ mod e2e_client;
 #[cfg(test)]
 mod test_support;
 
-/// Name -> API token for every configured Hetzner project, plus the
-/// operator-set `HCLOUD_PROJECT` pin (§3-§5 of the multi-project spec).
+/// Every configured Hetzner project by name, plus the operator-set default
+/// (`default` in config.toml) that read-only tools may fall back to (§3-§5
+/// of the multi-project spec).
 pub(crate) struct Projects {
-    tokens: BTreeMap<String, String>,
+    entries: BTreeMap<String, Project>,
     pin: Option<String>,
 }
 
@@ -46,19 +47,47 @@ pub(crate) struct Projects {
 impl std::fmt::Debug for Projects {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Projects")
-            .field("names", &self.tokens.keys().collect::<Vec<_>>())
+            .field("names", &self.names())
             .field("pin", &self.pin)
             .finish()
     }
 }
 
 impl Projects {
+    /// Non-validating: a `config::Config` has already enforced unique names,
+    /// unique tokens and that `pin` names a configured project.
+    pub(crate) fn new(projects: Vec<Project>, pin: Option<String>) -> Self {
+        Self {
+            entries: projects.into_iter().map(|p| (p.name.clone(), p)).collect(),
+            pin,
+        }
+    }
+
+    /// Configured names in `BTreeMap` (sorted) order - the one source for
+    /// the schema `enum`, error lists and `get_info`.
+    fn names(&self) -> Vec<&str> {
+        self.entries.keys().map(String::as_str).collect()
+    }
+
     fn names_list(&self) -> String {
-        self.tokens.keys().cloned().collect::<Vec<_>>().join(", ")
+        self.names().join(", ")
+    }
+
+    /// `name` or `name (description)` per project, comma-separated, so the
+    /// model can tell `nb-dns (DNS zones)` from `nb-main (main infra)`.
+    fn names_with_descriptions(&self) -> String {
+        self.entries
+            .values()
+            .map(|p| match &p.description {
+                Some(d) => format!("{} ({d})", p.name),
+                None => p.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.tokens.len()
+        self.entries.len()
     }
 
     /// Resolve a call's `project` argument to a (name, token) pair, or a
@@ -69,12 +98,12 @@ impl Projects {
         selector: Option<String>,
         read_only: bool,
     ) -> Result<(String, String), ErrorData> {
-        if self.tokens.len() == 1 {
-            let (only_name, only_token) = self.tokens.iter().next().expect("checked len == 1");
+        if self.entries.len() == 1 {
+            let (only_name, only) = self.entries.iter().next().expect("checked len == 1");
             return match selector {
-                None => Ok((only_name.clone(), only_token.clone())),
+                None => Ok((only_name.clone(), only.token.clone())),
                 Some(s) if s.is_empty() || &s == only_name => {
-                    Ok((only_name.clone(), only_token.clone()))
+                    Ok((only_name.clone(), only.token.clone()))
                 }
                 Some(s) => Err(ErrorData::invalid_params(
                     format!("unknown project \"{s}\"; this server has one project: {only_name}"),
@@ -84,9 +113,9 @@ impl Projects {
         }
         match selector {
             Some(s) => self
-                .tokens
+                .entries
                 .get(&s)
-                .map(|t| (s.clone(), t.clone()))
+                .map(|p| (s.clone(), p.token.clone()))
                 .ok_or_else(|| {
                     ErrorData::invalid_params(
                         format!(
@@ -100,7 +129,11 @@ impl Projects {
                 .pin
                 .as_ref()
                 .filter(|_| read_only)
-                .and_then(|pin| self.tokens.get(pin).map(|t| (pin.clone(), t.clone())))
+                .and_then(|pin| {
+                    self.entries
+                        .get(pin)
+                        .map(|p| (pin.clone(), p.token.clone()))
+                })
                 .ok_or_else(|| {
                     ErrorData::invalid_params(
                         format!(
@@ -113,57 +146,6 @@ impl Projects {
                 }),
         }
     }
-}
-
-/// Parse `HCLOUD_TOKEN` per spec §3.2: a bare 64-char token names the single
-/// project "default" (Form A), or comma-separated `name=token` pairs name N
-/// projects (Form B). Never echoes a token value in any error (rule 6).
-pub(crate) fn parse_token_env(raw: &str, pin: Option<String>) -> Result<Projects> {
-    const TOKEN_LEN: usize = 64;
-    let raw = raw.trim();
-    let mut tokens = BTreeMap::new();
-    if !raw.contains('=') {
-        if raw.len() != TOKEN_LEN {
-            bail!("HCLOUD_TOKEN: token must be exactly {TOKEN_LEN} characters");
-        }
-        tokens.insert("default".to_string(), raw.to_string());
-    } else {
-        let mut seen_tokens = std::collections::HashSet::new();
-        for (i, entry) in raw.split(',').enumerate() {
-            let idx = i + 1;
-            let entry = entry.trim();
-            let (name, token) = entry
-                .split_once('=')
-                .with_context(|| format!("HCLOUD_TOKEN entry {idx}: missing \"name=\" prefix"))?;
-            let (name, token) = (name.trim(), token.trim());
-            if name.is_empty() || token.is_empty() {
-                bail!("HCLOUD_TOKEN entry {idx}: name and token must both be non-empty");
-            }
-            let name_valid = name.len() <= 64
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c));
-            if !name_valid {
-                bail!("HCLOUD_TOKEN entry {idx}: name must match [a-z0-9._-]{{1,64}}");
-            }
-            if token.len() != TOKEN_LEN {
-                bail!("HCLOUD_TOKEN entry {idx}: token must be exactly {TOKEN_LEN} characters");
-            }
-            if tokens.contains_key(name) {
-                bail!("HCLOUD_TOKEN entry {idx}: duplicate name \"{name}\"");
-            }
-            if !seen_tokens.insert(token.to_string()) {
-                bail!("HCLOUD_TOKEN entry {idx}: duplicate token");
-            }
-            tokens.insert(name.to_string(), token.to_string());
-        }
-    }
-    if let Some(p) = &pin
-        && !tokens.contains_key(p)
-    {
-        bail!("HCLOUD_PROJECT names a project that is not configured: \"{p}\"");
-    }
-    Ok(Projects { tokens, pin })
 }
 
 /// Tool name shared by the schema-injection skip and `plan_call`'s
@@ -180,13 +162,17 @@ fn read_only(tool: &rmcp::model::Tool) -> bool {
 /// Inject the `project` schema property (§6.3) into every tool except
 /// `list_projects`. Schema only - no Rust struct declares `project` (T15);
 /// a strict-validation rmcp upgrade would break all 92 tools at once.
-fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&str>) {
+fn inject_project_property(router: &mut ToolRouter<HcloudServer>, projects: &Projects) {
+    let description = format!(
+        "Which configured Hetzner project to act on - one of: {}. Call list_projects if unsure.",
+        projects.names_with_descriptions()
+    );
     for route in router.map.values_mut() {
         if route.attr.name == LIST_PROJECTS {
             continue;
         }
         // `resolve` never lets the pin cover a mutating call, so neither can the schema.
-        let required = pin.is_none() || !read_only(&route.attr);
+        let required = projects.pin.is_none() || !read_only(&route.attr);
         let schema = Arc::make_mut(&mut route.attr.input_schema);
         schema
             .entry("properties".to_string())
@@ -197,7 +183,8 @@ fn inject_project_property(router: &mut ToolRouter<HcloudServer>, pin: Option<&s
                 "project".to_string(),
                 serde_json::json!({
                     "type": "string",
-                    "description": "Which configured Hetzner project to act on; call list_projects if unsure."
+                    "enum": projects.names(),
+                    "description": description,
                 }),
             );
         if required {
@@ -233,7 +220,7 @@ impl HcloudServer {
             + Self::lb_zone_ops_router()
             + Self::projects_router();
         if projects.len() > 1 {
-            inject_project_property(&mut tool_router, projects.pin.as_deref());
+            inject_project_property(&mut tool_router, &projects);
         }
         Self {
             client,
@@ -296,9 +283,9 @@ fn maybe_annotate(result: CallToolResponse, name: &str, multi_project: bool) -> 
 #[tool_router(router = projects_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
-        description = "List every configured Hetzner project by name, with a cheap \
-            fingerprint (server count and up to two server names) to catch a \
-            mislabeled token. Never returns a token.",
+        description = "List every configured Hetzner project by name and description, \
+            with a cheap fingerprint (server count and up to two server names) to \
+            catch a mislabeled token. Never returns a token.",
         annotations(
             title = "List projects",
             read_only_hint = true,
@@ -310,9 +297,10 @@ impl HcloudServer {
         let pin = self.projects.pin.clone();
         let single = self.projects.len() == 1;
         let mut probes = Vec::new();
-        for (name, token) in &self.projects.tokens {
-            let client = self.client.with_token(token.clone());
-            let name = name.clone();
+        for project in self.projects.entries.values() {
+            let client = self.client.with_token(project.token.clone());
+            let name = project.name.clone();
+            let description = project.description.clone();
             probes.push(tokio::spawn(async move {
                 let fingerprint = match client
                     .get("/servers", &[("per_page", "2".to_string())])
@@ -321,17 +309,18 @@ impl HcloudServer {
                     Ok(v) => project_fingerprint(&v),
                     Err(e) => format!("unreachable: {e:#}"),
                 };
-                (name, fingerprint)
+                (name, description, fingerprint)
             }));
         }
         let mut projects = Vec::new();
         for probe in probes {
-            let (name, fingerprint) = probe
+            let (name, description, fingerprint) = probe
                 .await
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             let is_default = single || pin.as_deref() == Some(name.as_str());
             projects.push(serde_json::json!({
                 "name": name,
+                "description": description,
                 "is_default": is_default,
                 "fingerprint": fingerprint,
             }));
@@ -419,15 +408,15 @@ impl ServerHandler for HcloudServer {
         );
         if self.projects.len() > 1 {
             let pin_note = if self.projects.pin.is_some() {
-                " With a default project configured (HCLOUD_PROJECT), read-only \
-                 tools may omit `project`; mutating tools always require it."
+                " With a default project configured (`default` in config.toml), \
+                 read-only tools may omit `project`; mutating tools always require it."
             } else {
                 " No default project is configured, so every tool requires `project`."
             };
             instructions.push_str(&format!(
                 " Several projects are configured; pass `project` to select one.\
                 {pin_note} Configured projects: {}.",
-                self.projects.names_list()
+                self.projects.names_with_descriptions()
             ));
         }
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -619,18 +608,14 @@ pub(crate) fn action_body(params: Option<serde_json::Map<String, Value>>) -> Val
     params.map_or_else(|| serde_json::json!({}), Value::Object)
 }
 
-/// Start the stdio MCP server and run until the client disconnects.
-pub async fn run() -> anyhow::Result<()> {
-    let raw =
-        std::env::var("HCLOUD_TOKEN").context("HCLOUD_TOKEN environment variable is required")?;
-    let pin = std::env::var("HCLOUD_PROJECT")
-        .ok()
-        .filter(|s| !s.is_empty());
-    let projects = parse_token_env(&raw, pin)?;
+/// Start the stdio MCP server on an already-validated config and run until
+/// the client disconnects. Reads nothing from the environment.
+pub async fn run(config: config::Config) -> anyhow::Result<()> {
     // Empty on purpose: this client is only a template (see HcloudServer's
     // doc comment) - a call that skipped scoping would fail loudly instead
     // of silently reusing whichever project happened to be seeded here.
-    let client = HcloudClient::from_env(String::new())?;
+    let client = HcloudClient::new(config.base_url, String::new())?;
+    let projects = Projects::new(config.projects, config.default);
     let service = HcloudServer::new(client, projects).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -828,6 +813,70 @@ mod tests {
         }
     }
 
+    /// The mcpb bundle launches the binary with `--config` and no `env`
+    /// block: the manifest is the only launch contract shipped to users.
+    #[test]
+    fn mcpb_manifest_launches_with_config_arg_and_no_env() {
+        let manifest_text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/mcpb/manifest.json"))
+                .expect("mcpb/manifest.json must be readable");
+        let manifest: Value = serde_json::from_str(&manifest_text).unwrap();
+        let mcp_config = &manifest["server"]["mcp_config"];
+        assert!(mcp_config.get("env").is_none(), "{mcp_config}");
+        assert_eq!(
+            mcp_config["args"],
+            serde_json::json!(["--config", "${user_config.config_file}"])
+        );
+        let config_file = &manifest["user_config"]["config_file"];
+        assert!(
+            matches!(config_file["type"].as_str(), Some("file" | "string")),
+            "{config_file}"
+        );
+        assert_eq!(config_file["required"], true);
+        assert!(
+            config_file["default"]
+                .as_str()
+                .is_some_and(|d| d.ends_with("hetzner-mcp/config.toml")),
+            "{config_file}"
+        );
+        assert!(!manifest_text.contains("HCLOUD_"));
+    }
+
+    /// D1: the config file is the only input. Environment reads live in
+    /// `config.rs` alone (`args_os` in main.rs is argv, not environment).
+    #[test]
+    fn env_is_read_only_in_config_rs() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        assert!(files.len() > 10, "walked {} files", files.len());
+        // Split so this test's own source does not match itself.
+        let needles = [concat!("env::", "var"), concat!("home_", "dir(")];
+        for file in files {
+            if file.ends_with("config.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            for needle in needles {
+                assert!(
+                    !text.contains(needle),
+                    "{} reads the environment ({needle}); only config.rs may",
+                    file.display()
+                );
+            }
+        }
+    }
+
     #[test]
     fn map_api_err_returns_a_tool_error_result_with_the_message() {
         let res = map_api_err(anyhow::anyhow!("boom"));
@@ -953,7 +1002,9 @@ mod multi_project_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::compute::ListServersArgs;
-    use super::test_support::{dead_projects, dead_server, project_token, server_for_projects};
+    use super::test_support::{
+        dead_described, dead_projects, dead_server, project_token, server_for_projects,
+    };
     use super::*;
 
     fn tools_except_list_projects(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
@@ -1034,6 +1085,12 @@ mod multi_project_tests {
                 "{}: should be required with no pin",
                 tool.name
             );
+            assert_eq!(
+                tool.input_schema["properties"]["project"]["enum"],
+                serde_json::json!(["prod", "staging"]),
+                "{}: enum",
+                tool.name
+            );
         }
 
         let pinned = dead_projects(&["prod", "staging"], Some("prod"));
@@ -1047,6 +1104,26 @@ mod multi_project_tests {
                 "{}: required must track \"mutating\" under a pin",
                 tool.name
             );
+        }
+    }
+
+    // T2b (D5): the injected property lists every name with its description
+    // and pins the enum, so the model can pick the right project.
+    #[test]
+    fn t2b_project_property_lists_names_and_descriptions() {
+        let server = dead_described(&[("nb-dns", Some("DNS zones")), ("nb-main", None)], None);
+        let tools = tools_except_list_projects(server.tool_router.list_all());
+        assert_eq!(tools.len(), 92);
+        for tool in &tools {
+            let project = &tool.input_schema["properties"]["project"];
+            let description = project["description"].as_str().unwrap();
+            assert!(
+                description.contains("nb-dns (DNS zones), nb-main"),
+                "{}: {description}",
+                tool.name
+            );
+            assert!(description.contains("list_projects"), "{}", tool.name);
+            assert_eq!(project["enum"], serde_json::json!(["nb-dns", "nb-main"]));
         }
     }
 
@@ -1133,29 +1210,6 @@ mod multi_project_tests {
         }
     }
 
-    // T6c: Form A and a one-entry Form B named "default" are indistinguishable.
-    #[test]
-    fn t6c_form_a_is_equivalent_to_an_explicit_default_entry() {
-        let token = "a".repeat(64);
-        let form_a = parse_token_env(&token, None).unwrap();
-        let form_b = parse_token_env(&format!("default={token}"), None).unwrap();
-        assert_eq!(form_a.tokens, form_b.tokens);
-        assert_eq!(form_a.pin, form_b.pin);
-
-        let a = HcloudServer::new(
-            HcloudClient::new("http://127.0.0.1:9", token.clone()).unwrap(),
-            form_a,
-        );
-        let b = HcloudServer::new(
-            HcloudClient::new("http://127.0.0.1:9", token).unwrap(),
-            form_b,
-        );
-        assert_eq!(
-            serde_json::to_string(&a.tool_router.list_all()).unwrap(),
-            serde_json::to_string(&b.tool_router.list_all()).unwrap()
-        );
-    }
-
     // T7: a pinned default is used when no selector is given, for a
     // read-only tool - and that token reaches the wire.
     #[tokio::test]
@@ -1194,49 +1248,6 @@ mod multi_project_tests {
         let mut args = Some(serde_json::json!({"id": 1}).as_object().unwrap().clone());
         let e = server.plan_call("delete_server", &mut args).unwrap_err();
         assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
-    }
-
-    // T9: every §3.2 rejection is a non-zero exit (an `Err`) whose message
-    // never contains the offending token substring.
-    #[test]
-    fn t9_every_parse_rejection_omits_the_token() {
-        let token = "b".repeat(64);
-        let cases: Vec<(String, Option<&str>)> = vec![
-            (format!("prod={token},"), None), // trailing comma: empty entry
-            (format!("={token}"), None),      // empty name
-            (format!("prod=,staging={token}"), None), // empty token
-            ("prod=short".to_string(), None), // wrong length
-            (format!("PROD={token}"), None),  // name outside [a-z0-9._-]
-            (format!("prod={token},prod={token}"), None), // duplicate name
-            (format!("prod={token},staging={token}"), None), // duplicate token
-            (format!("prod={token},bare"), None), // one entry missing "name="
-            (format!("prod={token}"), Some("elsewhere")), // HCLOUD_PROJECT names an unknown project
-        ];
-        for (raw, pin) in &cases {
-            let err = parse_token_env(raw, pin.map(str::to_string)).unwrap_err();
-            let msg = err.to_string();
-            assert!(!msg.contains(&token), "leaked token in: {msg}");
-        }
-    }
-
-    // T10: the spike's exact failure mode - a bare "=" reinterpreted as one
-    // long token - is rejected by the 64-char guard, not silently truncated.
-    #[test]
-    fn t10_the_64_char_guard_rejects_the_spike_failure_mode() {
-        // The spec's own example - rejected outright, never truncated to "BBBBBBBB".
-        assert!(parse_token_env("AAAAAAAA=BBBBBBBB", None).is_err());
-        // Isolate the length guard itself with an otherwise-valid name.
-        let err = parse_token_env("prod=BBBBBBBB", None).unwrap_err();
-        assert!(err.to_string().contains("64 characters"));
-    }
-
-    // T11: two names sharing one token is rejected at startup (a mislabel is
-    // otherwise undetectable via the API, C2).
-    #[test]
-    fn t11_duplicate_token_is_rejected() {
-        let token = "c".repeat(64);
-        let err = parse_token_env(&format!("prod={token},staging={token}"), None).unwrap_err();
-        assert!(err.to_string().contains("duplicate token"));
     }
 
     // T12: every result carries the resolved project name; the token never
@@ -1305,10 +1316,10 @@ mod multi_project_tests {
         assert_ne!(result.is_error, Some(true));
     }
 
-    // T14: list_projects names every project and whether it is the pinned
-    // default; no token ever appears in the result.
+    // T14: list_projects names every project, its description (null when
+    // unset) and whether it is the pinned default; no token ever appears.
     #[tokio::test]
-    async fn t14_list_projects_reports_names_and_default_without_a_token() {
+    async fn t14_list_projects_reports_names_descriptions_and_default_without_a_token() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/servers"))
@@ -1320,7 +1331,24 @@ mod multi_project_tests {
             .mount(&mock)
             .await;
 
-        let server = server_for_projects(mock.uri(), &["prod", "staging"], Some("prod"));
+        let server = HcloudServer::new(
+            HcloudClient::new(mock.uri(), "unused").unwrap(),
+            Projects::new(
+                vec![
+                    Project {
+                        name: "prod".into(),
+                        token: project_token("prod"),
+                        description: Some("production".into()),
+                    },
+                    Project {
+                        name: "staging".into(),
+                        token: project_token("staging"),
+                        description: None,
+                    },
+                ],
+                Some("prod".into()),
+            ),
+        );
         let result = server.list_projects().await.unwrap();
         let text = result.content[0].as_text().unwrap().text.clone();
         assert!(!text.contains(&project_token("prod")));
@@ -1330,8 +1358,41 @@ mod multi_project_tests {
         assert_eq!(projects.len(), 2);
         let prod = projects.iter().find(|p| p["name"] == "prod").unwrap();
         assert_eq!(prod["is_default"], true);
+        assert_eq!(prod["description"], "production");
         let staging = projects.iter().find(|p| p["name"] == "staging").unwrap();
         assert_eq!(staging["is_default"], false);
+        assert_eq!(staging["description"], Value::Null);
+        assert!(staging.as_object().unwrap().contains_key("description"));
+    }
+
+    // The model-facing instructions point at config.toml, never at a removed
+    // environment variable; a single-project server says nothing about projects.
+    #[test]
+    fn instructions_name_the_config_default_and_never_an_env_var() {
+        let pinned = dead_projects(&["prod", "staging"], Some("prod"));
+        let text = pinned.get_info().instructions.unwrap();
+        assert!(text.contains("config.toml"), "{text}");
+        assert!(text.contains("prod") && text.contains("staging"), "{text}");
+        assert!(!text.contains("HCLOUD"), "{text}");
+
+        let single = dead_server().get_info().instructions.unwrap();
+        assert!(!single.contains("project"), "{single}");
+    }
+
+    /// The configured-projects sentence renders descriptions, so the model
+    /// can pick a project from the handshake alone (spec §5).
+    #[test]
+    fn instructions_list_projects_with_their_descriptions() {
+        let server = dead_described(
+            &[("nb-dns", Some("DNS zones")), ("nb-main", None)],
+            Some("nb-main"),
+        );
+        let text = server.get_info().instructions.unwrap();
+        assert!(
+            text.contains("Configured projects: nb-dns (DNS zones), nb-main."),
+            "{text}"
+        );
+        assert!(text.contains("read-only tools may omit"), "{text}");
     }
 
     // Fix 1: list_projects must stay reachable with n>1 and no pin - its

@@ -20,7 +20,8 @@
 // Requires: cargo, node/npx. macOS universal builds also need lipo (Xcode CLT).
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, copyFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,9 +74,14 @@ function toolsFromLiveBinary() {
   console.log("==> Building a debug binary to introspect tools");
   run("cargo", ["build", "--locked"]);
   const binPath = join(ROOT, "target", "debug", `${BIN_NAME}${platform.exe}`);
-  // Synthetic - never a real token - and single-project, so no `project`
-  // schema property leaks into the committed tool descriptions.
+  // The binary reads projects from a config file (no env vars), so hand it a
+  // throwaway one via --config. Synthetic - never a real token - and
+  // single-project, so no `project` schema property leaks into the committed
+  // tool descriptions.
   const token = "a".repeat(64);
+  const tmpDir = mkdtempSync(join(tmpdir(), "hetzner-mcp-manifest-"));
+  const cfgPath = join(tmpDir, "config.toml");
+  writeFileSync(cfgPath, `[[projects]]\nname = "sync"\ntoken = "${token}"\n`, { mode: 0o600 });
   const requests =
     [
       {
@@ -93,12 +99,16 @@ function toolsFromLiveBinary() {
     ]
       .map((m) => JSON.stringify(m))
       .join("\n") + "\n";
-  const output = execFileSync(binPath, [], {
-    cwd: ROOT,
-    input: requests,
-    env: { ...process.env, HCLOUD_TOKEN: token },
-    encoding: "utf8",
-  });
+  let output;
+  try {
+    output = execFileSync(binPath, ["--config", cfgPath], {
+      cwd: ROOT,
+      input: requests,
+      encoding: "utf8",
+    });
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
   const listResult = output
     .split("\n")
     .filter(Boolean)

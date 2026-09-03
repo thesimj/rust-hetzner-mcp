@@ -1,6 +1,6 @@
 [package]
 name = "hetzner-mcp"
-version = "0.3.2"
+version = "0.4.0"
 authors = ["Nick Bubelich <n+github@bubelich.com>"]
 edition = "2024"
 # Floor set by rmcp 3.x and our use of let-chains.
@@ -33,10 +33,14 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 anyhow = "1"
 # Already a transitive dep via reqwest; promoted to direct so hcloud.rs can
-# parse HCLOUD_ENDPOINT properly instead of hand-splitting (D2 finding 1).
-# Caret, not pinned: reqwest already forces the major version via lockfile
-# unification, so a patch release of the URL parser is safe to pick up.
+# parse the configured `endpoint` URL properly instead of hand-splitting
+# (D2 finding 1). Caret, not pinned: reqwest already forces the major
+# version via lockfile unification, so a patch release of the URL parser is
+# safe to pick up.
 url = "2"
+# config.toml parsing only - no `display` (we never serialize TOML) and no
+# `unbounded` (nesting stays depth-limited on untrusted-ish input).
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 
 [dev-dependencies]
 wiremock = "0.6"

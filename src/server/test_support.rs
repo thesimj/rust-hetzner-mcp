@@ -1,9 +1,8 @@
 //! Shared test helpers used by the per-domain tool test modules.
 
-use std::collections::BTreeMap;
-
 use rmcp::model::CallToolResult;
 
+use crate::config::Project;
 use crate::hcloud::HcloudClient;
 
 use super::{HcloudServer, Projects};
@@ -29,10 +28,14 @@ pub(crate) fn dead_projects(names: &[&str], pin: Option<&str>) -> HcloudServer {
 /// Build a single-project server whose client talks to the given mock
 /// Hetzner base URL - the pre-multi-project shape every existing test uses.
 pub(crate) fn server_for(uri: String) -> HcloudServer {
-    let projects = Projects {
-        tokens: BTreeMap::from([("default".to_string(), "test-token".to_string())]),
-        pin: None,
-    };
+    let projects = Projects::new(
+        vec![Project {
+            name: "default".into(),
+            token: "test-token".into(),
+            description: None,
+        }],
+        None,
+    );
     HcloudServer::new(
         HcloudClient::new(uri, "test-token").expect("test client"),
         projects,
@@ -46,22 +49,43 @@ pub(crate) fn project_token(name: &str) -> String {
 }
 
 /// Build a multi-project server against one mock base URL, one project per
-/// name, each with its own [`project_token`]. `pin` mirrors `HCLOUD_PROJECT`.
+/// name, each with its own [`project_token`]. `pin` mirrors the config
+/// file's `default`.
 pub(crate) fn server_for_projects(uri: String, names: &[&str], pin: Option<&str>) -> HcloudServer {
-    let tokens: BTreeMap<String, String> = names
+    let projects: Vec<Project> = names
         .iter()
-        .map(|n| (n.to_string(), project_token(n)))
+        .map(|n| Project {
+            name: n.to_string(),
+            token: project_token(n),
+            description: None,
+        })
         .collect();
-    let seed = tokens
-        .values()
-        .next()
+    let seed = projects
+        .first()
         .expect("at least one project")
+        .token
         .clone();
-    let projects = Projects {
-        tokens,
-        pin: pin.map(str::to_string),
-    };
-    HcloudServer::new(HcloudClient::new(uri, seed).expect("test client"), projects)
+    HcloudServer::new(
+        HcloudClient::new(uri, seed).expect("test client"),
+        Projects::new(projects, pin.map(str::to_string)),
+    )
+}
+
+/// Multi-project server at [`DEAD_PORT`] whose projects carry descriptions
+/// (D5): `(name, description)` pairs.
+pub(crate) fn dead_described(entries: &[(&str, Option<&str>)], pin: Option<&str>) -> HcloudServer {
+    let projects: Vec<Project> = entries
+        .iter()
+        .map(|(n, d)| Project {
+            name: n.to_string(),
+            token: project_token(n),
+            description: d.map(str::to_string),
+        })
+        .collect();
+    HcloudServer::new(
+        HcloudClient::new(DEAD_PORT, "unused").expect("test client"),
+        Projects::new(projects, pin.map(str::to_string)),
+    )
 }
 
 /// Extract the JSON the tool wrote into its text content block.

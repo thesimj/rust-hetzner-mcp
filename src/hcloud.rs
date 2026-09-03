@@ -23,13 +23,6 @@ pub struct HcloudClient {
 }
 
 impl HcloudClient {
-    /// Build a client for `token` against `HCLOUD_ENDPOINT` (optional base
-    /// URL override, same convention as the official hcloud CLI) or the real
-    /// API. The caller resolves `HCLOUD_TOKEN` (single- or multi-project).
-    pub fn from_env(token: impl Into<String>) -> Result<Self> {
-        Self::new(endpoint(std::env::var("HCLOUD_ENDPOINT").ok())?, token)
-    }
-
     /// Clone this client with a different project's token, sharing the same
     /// underlying `reqwest::Client` (and its connection pool) - swapping
     /// projects per call must not rebuild the HTTP layer each time.
@@ -141,25 +134,53 @@ impl HcloudClient {
     }
 }
 
-/// The effective base URL: a non-empty `HCLOUD_ENDPOINT` wins (after
-/// rejecting a non-https, non-loopback override), else the real API.
-fn endpoint(env_value: Option<String>) -> Result<String> {
-    let Some(v) = env_value
-        .map(|v| v.trim_end_matches('/').to_string())
+/// The effective base URL: a non-empty configured `endpoint` wins (after
+/// rejecting a non-https, non-loopback override), else the real API. Called
+/// by `config::parse` so the URL policy lives here but surfaces as a config
+/// error.
+pub(crate) fn resolve_endpoint(override_: Option<&str>) -> Result<String> {
+    let Some(v) = override_
+        .map(|v| v.trim_end_matches('/'))
         .filter(|v| !v.is_empty())
     else {
         return Ok(BASE_URL.to_string());
     };
-    if !v.starts_with("https://") && !is_loopback_http(&v) {
+    if !v.starts_with("https://") && !is_loopback_http(v) {
         bail!(
-            "HCLOUD_ENDPOINT must use https:// (or http:// to 127.0.0.1/::1/localhost), got: {v}"
+            "endpoint must use https:// (or http:// to 127.0.0.1/::1/localhost), got {}",
+            endpoint_origin(v)
         );
     }
-    Ok(v)
+    Ok(v.to_string())
+}
+
+/// What a rejected `endpoint` is described as: `scheme://host` only. Userinfo,
+/// path and query are dropped and a host OR scheme of 32+ characters is
+/// `<redacted>` (the same threshold as `config::redact_quoted`), so a token
+/// pasted into the URL - `http://<token>@evil.example/v1`, `ftp://<token>`,
+/// or `<token>:443` (any `[a-zA-Z][a-zA-Z0-9+.-]*` parses as a scheme) - never
+/// reaches stderr. The full value is never echoed: the user can see it in the
+/// file.
+fn endpoint_origin(v: &str) -> String {
+    let Ok(url) = url::Url::parse(v) else {
+        return "an unparsable URL".to_string();
+    };
+    let shown = |part: &str| {
+        if part.chars().count() < 32 {
+            part.to_string()
+        } else {
+            "<redacted>".to_string()
+        }
+    };
+    let scheme = shown(url.scheme());
+    match url.host_str() {
+        Some(host) => format!("{scheme}://{}", shown(host)),
+        None => format!("{scheme}: with no host"),
+    }
 }
 
 /// Whether `v` is an `http://` URL whose host is a loopback address - the
-/// only case a plaintext `HCLOUD_ENDPOINT` override is allowed (wiremock in
+/// only case a plaintext `endpoint` override is allowed (wiremock in
 /// tests; `HcloudClient::new` itself stays scheme-agnostic for the same
 /// reason). Parsed with `url::Url` (D2 finding 1): a hand-rolled string split
 /// on "http://[...]" read only up to the bracket and missed userinfo
@@ -202,37 +223,71 @@ mod tests {
 
     #[test]
     fn endpoint_defaults_to_the_real_api_and_honours_a_non_empty_override() {
-        assert_eq!(endpoint(None).unwrap(), BASE_URL);
-        assert_eq!(endpoint(Some(String::new())).unwrap(), BASE_URL);
+        assert_eq!(resolve_endpoint(None).unwrap(), BASE_URL);
+        assert_eq!(resolve_endpoint(Some("")).unwrap(), BASE_URL);
         assert_eq!(
-            endpoint(Some("https://internal.example/v1".into())).unwrap(),
+            resolve_endpoint(Some("https://internal.example/v1")).unwrap(),
             "https://internal.example/v1"
         );
         assert_eq!(
-            endpoint(Some("http://127.0.0.1:1/v1".into())).unwrap(),
+            resolve_endpoint(Some("http://127.0.0.1:1/v1")).unwrap(),
             "http://127.0.0.1:1/v1"
         );
         assert_eq!(
-            endpoint(Some("http://127.0.0.1:1/v1/".into())).unwrap(),
+            resolve_endpoint(Some("http://127.0.0.1:1/v1/")).unwrap(),
             "http://127.0.0.1:1/v1"
         );
         assert_eq!(
-            endpoint(Some("http://localhost:1/v1".into())).unwrap(),
+            resolve_endpoint(Some("http://localhost:1/v1")).unwrap(),
             "http://localhost:1/v1"
         );
         assert_eq!(
-            endpoint(Some("http://[::1]:1/v1".into())).unwrap(),
+            resolve_endpoint(Some("http://[::1]:1/v1")).unwrap(),
             "http://[::1]:1/v1"
         );
     }
 
-    /// W2.3: a plaintext, non-loopback override is rejected - the env is
-    /// trusted, but a typo'd `http://` should not silently ship credentials
-    /// in the clear to some other host.
+    /// W2.3: a plaintext, non-loopback override is rejected - the config
+    /// file is trusted, but a typo'd `http://` should not silently ship
+    /// credentials in the clear to some other host.
     #[test]
     fn endpoint_rejects_a_non_https_non_loopback_override() {
-        let err = endpoint(Some("http://api.hetzner.cloud/v1".into())).unwrap_err();
-        assert!(err.to_string().contains("https://"), "got: {err}");
+        let err = resolve_endpoint(Some("http://api.hetzner.cloud/v1")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("https://"), "got: {err}");
+        assert!(msg.contains("got http://api.hetzner.cloud"), "got: {err}");
+        assert!(!msg.contains("/v1"), "the path is not echoed, got: {err}");
+        assert!(!msg.contains("HCLOUD"), "got: {err}");
+    }
+
+    /// The rejection names only `scheme://host`: userinfo, path and query are
+    /// dropped and a 32+ character host or scheme is redacted, so a token
+    /// pasted into the URL is never printed (D4 - no error ever quotes a token).
+    #[test]
+    fn endpoint_rejection_never_echoes_userinfo_or_a_long_host() {
+        let token: String = "Ab".repeat(32);
+        for (bad, shown) in [
+            (
+                format!("http://{token}@evil.example/v1"),
+                "got http://evil.example",
+            ),
+            (format!("ftp://{token}"), "got ftp://<redacted>"),
+            (format!("https-{token}"), "got an unparsable URL"),
+            (format!("mailto:{token}"), "got mailto: with no host"),
+            // A token followed by ':' parses as the URL *scheme* (round-2
+            // fixer finding 2); the scheme gets the same 32-char redaction.
+            (format!("{token}:443"), "got <redacted>: with no host"),
+            (format!("{token}://x"), "got <redacted>://x"),
+        ] {
+            let err = resolve_endpoint(Some(&bad)).expect_err(&bad);
+            let msg = err.to_string();
+            assert!(!msg.contains(&token), "leaked token: {msg}");
+            assert!(
+                !msg.to_lowercase().contains(&token.to_lowercase()),
+                "leaked token: {msg}"
+            );
+            assert!(msg.contains(shown), "{bad} got: {msg}");
+        }
     }
 
     /// D2 finding 1: the old string-splitting guard read only up to the
@@ -247,8 +302,12 @@ mod tests {
             "http://localhost@evil.example/v1",
             "http://127.0.0.1@evil.example/v1",
         ] {
-            let err = endpoint(Some(bad.into())).expect_err(bad);
-            assert!(err.to_string().contains("https://"), "{bad} got: {err}");
+            let err = resolve_endpoint(Some(bad)).expect_err(bad);
+            let msg = err.to_string();
+            assert!(msg.contains("https://"), "{bad} got: {err}");
+            assert!(msg.contains("got http://evil.example"), "{bad} got: {err}");
+            assert!(!msg.contains('@'), "userinfo is dropped, {bad} got: {err}");
+            assert!(!msg.contains("HCLOUD"), "{bad} got: {err}");
         }
     }
 

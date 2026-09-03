@@ -18,9 +18,10 @@ in a single Rust binary: 93 tools covering every resource group of
   servers, images, server types, SSH keys, locations, datacenters, volumes,
   networks, firewalls, Floating IPs, Primary IPs, Load Balancers, certificates,
   ISOs, placement groups, DNS zones and RRSets, action polling, and pricing.
-- **Multiple projects** - one `HCLOUD_TOKEN` can hold several projects'
-  tokens; a `project` argument and the `list_projects` tool select and list
-  them. See [Multiple projects](#multiple-projects).
+- **Multiple projects** - one config file lists any number of projects with a
+  name, token and optional description; every tool takes a `project` argument
+  and `list_projects` shows names, descriptions and a fingerprint. See
+  [Multiple projects](#multiple-projects).
 - **Safety-annotated tools** - every tool declares `readOnlyHint` and
   `destructiveHint` on the wire; billable creates and permanent deletes say so
   in their descriptions, so MCP clients can gate confirmations correctly.
@@ -31,7 +32,8 @@ in a single Rust binary: 93 tools covering every resource group of
   call with no fields set is rejected locally instead of sent.
 - **Local-only, zero state** - stdio transport, TLS via
   [rustls](https://github.com/rustls/rustls), no telemetry, no files
-  written, nothing persisted. See [Privacy Policy](#privacy-policy).
+  written, nothing persisted. Credentials come from one config file you own
+  (`~/.config/hetzner-mcp/config.toml`). See [Privacy Policy](#privacy-policy).
 
 ## Install
 
@@ -49,9 +51,26 @@ cargo install --path .
 
 ## Configure for Claude Code
 
-```sh
-claude mcp add hetzner -e HCLOUD_TOKEN=your-token-here -- hetzner-mcp
-```
+1. Create the config file with at least one project (full syntax under
+   [Configuration](#configuration)):
+
+   ```sh
+   mkdir -p ~/.config/hetzner-mcp
+   $EDITOR ~/.config/hetzner-mcp/config.toml
+   chmod 600 ~/.config/hetzner-mcp/config.toml
+   ```
+
+   ```toml
+   [[projects]]
+   name = "main"
+   token = "<64-char token>"
+   ```
+
+2. Register the server - no token goes into the client config:
+
+   ```sh
+   claude mcp add hetzner -- hetzner-mcp
+   ```
 
 For any other MCP client, add it to your server config:
 
@@ -59,14 +78,26 @@ For any other MCP client, add it to your server config:
 {
   "mcpServers": {
     "hetzner": {
-      "command": "hetzner-mcp",
-      "env": {
-        "HCLOUD_TOKEN": "your-token-here"
-      }
+      "command": "hetzner-mcp"
     }
   }
 }
 ```
+
+## Configure for Claude Desktop
+
+Each [release](https://github.com/thesimj/rust-hetzner-mcp/releases) attaches a
+Claude Desktop extension bundle (`hetzner-mcp-macos.mcpb`,
+`hetzner-mcp-linux.mcpb`, `hetzner-mcp-windows.mcpb`). Create
+`config.toml` first (see [Configuration](#configuration)), open the bundle in
+Claude Desktop, and point the extension's *config file* setting at it (the
+default is `~/.config/hetzner-mcp/config.toml`). If the file picker does not
+show the hidden `.config` folder, press `Cmd+Shift+.` on macOS, enable *Show
+hidden items* on Windows, or paste the path.
+
+If the extension shows *Server disconnected*, the startup error (missing file,
+bad token length, ...) is in Claude Desktop > Settings > Developer > *Open Logs
+Folder* (`mcp-server-hetzner-mcp.log`).
 
 ## Connect another client (CLI, IDE, agent)
 
@@ -75,84 +106,148 @@ has copy-paste setup for Claude Code, Codex CLI, Gemini CLI, Antigravity,
 Cursor, Windsurf, VS Code (Copilot), Zed, Cline, Roo Code, Continue, Goose,
 opencode, Crush, Amp, and OpenHands.
 
-## Credentials
+## Configuration
+
+`hetzner-mcp` reads exactly one file at startup and nothing else - no
+environment variables, no `.env`. It never writes the file and never copies
+tokens anywhere else.
+
+### Where the file lives
+
+| Platform | Default path |
+| --- | --- |
+| Linux, macOS | `$XDG_CONFIG_HOME/hetzner-mcp/config.toml` if `XDG_CONFIG_HOME` is set and non-empty, else `~/.config/hetzner-mcp/config.toml` |
+| Windows | `%USERPROFILE%\.config\hetzner-mcp\config.toml` |
+| Any | `hetzner-mcp --config /path/to/config.toml` overrides the lookup |
+
+Use an absolute path with `--config` - MCP clients start the server from an
+arbitrary working directory. Every startup error prints the resolved absolute
+path it tried, and `hetzner-mcp --help` prints the default path for your
+machine. A missing file is reported with a minimal example and the `--config`
+hint; a file that is not UTF-8 (a common Windows editor default) is rejected
+with a hint to re-save it as UTF-8.
+
+### Example
+
+```toml
+# ~/.config/hetzner-mcp/config.toml
+# ($XDG_CONFIG_HOME/hetzner-mcp/config.toml if XDG_CONFIG_HOME is set;
+#  %USERPROFILE%\.config\hetzner-mcp\config.toml on Windows;
+#  or any path via: hetzner-mcp --config /path/to/config.toml)
+#
+# Keep this file private - it holds API tokens:  chmod 600 ~/.config/hetzner-mcp/config.toml
+# Top-level keys (`default`, `endpoint`) must come BEFORE the first [[projects]] table.
+# Each project is a [[projects]] table - double brackets, one table per project.
+
+# Optional. With several projects, read-only tools may omit `project` and use this one.
+# Mutating tools (create_*/update_*/delete_*/*_action/power_server) always require `project`.
+default = "nb-main"
+
+# Optional. API base URL for every project. https://, or http:// to 127.0.0.1/[::1]/localhost only.
+# endpoint = "https://api.hetzner.cloud/v1"
+
+[[projects]]
+name = "nb-main"                 # [a-z0-9._-]{1,64}, unique
+token = "0000000000000000000000000000000000000000000000000000000000000000"   # exactly 64 characters, unique
+description = "main infra: web servers, load balancer, volumes"   # optional, <= 200 chars; shown to the model - keep it short
+
+[[projects]]
+name = "nb-dns"
+token = "1111111111111111111111111111111111111111111111111111111111111111"
+description = "DNS zones only (read-only token)"
+
+[[projects]]
+name = "lab"
+token = "2222222222222222222222222222222222222222222222222222222222222222"
+# description is optional - the name alone is listed when it is absent
+```
+
+### Keys
+
+| Key | Required | Default | Rules |
+| --- | --- | --- | --- |
+| `default` | no | - | Name of one `[[projects]]` entry. With several projects, read-only tools may omit `project` and use it; mutating tools always require `project` explicitly. Allowed with a single project too. |
+| `endpoint` | no | `https://api.hetzner.cloud/v1` | API base URL for every project. Must be `https://`, or `http://` to `127.0.0.1`, `[::1]` or `localhost` (a local mock). A trailing `/` is trimmed; `""` means the default. |
+| `projects[].name` | yes | - | Matches `[a-z0-9._-]{1,64}`; unique. This is the value the model passes as `project`. |
+| `projects[].token` | yes | - | Hetzner Cloud API token, exactly 64 characters (not trimmed - a stray space is reported as "got 65"); unique across projects. |
+| `projects[].description` | no | - | Trimmed; at most 200 characters; empty means absent. Shown in every tool's `project` argument and in `list_projects` - keep it to a few words (e.g. `DNS zones`); the 200-char cap is a limit, not a target. |
+
+Unknown keys are rejected. Two TOML gotchas, both caught with a targeted hint:
+
+- Top-level keys (`default`, `endpoint`) must appear **above** the first
+  `[[projects]]` table - below it, TOML makes them fields of that project.
+- Projects are `[[projects]]` tables with **double** brackets, one table per
+  project. `[projects]` with single brackets is a map, not a list.
+
+### Startup checks
+
+The server exits non-zero (the MCP client shows it as disconnected) and prints
+`Error: invalid config file <absolute path>` plus a `Caused by:` line when:
+
+- no `[[projects]]` entry is defined;
+- a `name` does not match `[a-z0-9._-]{1,64}`, or is used twice;
+- a `token` is not exactly 64 characters, or is identical to another
+  project's token;
+- a `description` exceeds 200 characters;
+- `default` does not name a configured project (the configured names are
+  listed);
+- `endpoint` is not `https://` and not `http://` to a loopback address;
+- the TOML has a syntax error, an unknown key, or a misplaced top-level key.
+
+Every per-project message cites the entry by 1-based index and, once the name
+has passed validation, by name - `projects[2] ("nb-dns"): token must be
+exactly 64 characters (got 65)`. No message ever quotes a token, a rejected
+name, or a line of the file, so stderr and client logs stay safe to share.
+
+### Tokens
 
 Create an API token in the Hetzner Cloud Console, per
 [Hetzner's guide](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token).
 Tokens are per-project and come in two flavors - **read-only** covers every
 `list_*`/`get_*` tool; pick **read & write** only if you need the mutating
-tools. Supply it as `HCLOUD_TOKEN` in your MCP client's `env` block, or export
-it in the shell that starts the client:
-
-```bash
-export HCLOUD_TOKEN="your-token-here"
-```
-
-On PowerShell:
-
-```powershell
-$env:HCLOUD_TOKEN = "your-token-here"
-```
-
-The server reads the token from the environment only - it does **not** load
-`.env` files. The token is sent solely to the Hetzner API as a bearer header;
-it is never logged or written to disk. Do not commit tokens; this repo's
-`.gitignore` already excludes `.env` and `.env.*`.
-
-## Environment variables
-
-| Variable          | Required | Default                          | Notes                                                                                                                    |
-| ------------------ | -------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `HCLOUD_TOKEN`    | yes      | -                                 | Hetzner Cloud API token(s). A single 64-character token names one project `default`; comma-separated `name=token` pairs (names `[a-z0-9._-]{1,64}`, each token exactly 64 characters) configure several - see [Multiple projects](#multiple-projects). Create one per [Hetzner's docs](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token). |
-| `HCLOUD_PROJECT`  | no       | -                                 | Sets a default project by name when `HCLOUD_TOKEN` configures more than one. With a default project configured, read-only tools may omit `project`; mutating tools still require it. |
-| `HCLOUD_ENDPOINT` | no       | `https://api.hetzner.cloud/v1` | Overrides the API base URL, same convention as the official `hcloud` CLI.                                                |
+tools. `config.toml` is the only place tokens live: keep it at mode `0600`
+(`chmod 600 ~/.config/hetzner-mcp/config.toml`), never commit it to any
+repository, and rotate a project by editing its `token` line and restarting the
+client. The token is sent solely to the Hetzner
+API as a bearer header; it is never logged or written anywhere.
 
 ## Multiple projects
 
-`HCLOUD_TOKEN` accepts two forms:
+List several `[[projects]]` tables and every pre-existing tool gains a
+`project` argument: a string `enum` of the configured names, described as
+"Which configured Hetzner project to act on - one of: lab, nb-dns (DNS zones
+only (read-only token)), nb-main (main infra: ...). Call list_projects if
+unsure." - the descriptions from `config.toml` are what lets the model pick
+the right project. A successful result is wrapped as
+`{"project": ..., "result": ...}`, while an error result instead gets a
+prepended `project: <name>` text line. The top-level `default` key sets a
+default project: read-only tools may then omit `project`, but mutating tools
+always require it explicitly. With one project, nothing about the tools or
+their output changes and calls may omit `project`.
 
-- **Form A** - a single 64-character token: the one project is named `default`.
-- **Form B** - comma-separated `name=token` pairs, one per project: names
-  match `[a-z0-9._-]{1,64}`, and each token is exactly 64 characters.
-
-```json
-{
-  "mcpServers": {
-    "hetzner": {
-      "command": "hetzner-mcp",
-      "env": {
-        "HCLOUD_TOKEN": "prod=<64-char-token>,staging=<64-char-token>",
-        "HCLOUD_PROJECT": "prod"
-      }
-    }
-  }
-}
-```
-
-With more than one project configured, every pre-existing tool gains a
-`project` argument ("Which configured Hetzner project to act on; call
-list_projects if unsure."); a successful result is wrapped
-as `{"project": ..., "result": ...}`, while an error result instead gets a
-prepended `project: <name>` text line. `HCLOUD_PROJECT` sets a default
-project: read-only tools may then omit `project`, but mutating tools always
-require it explicitly. With one project, nothing about the tools or their output
-changes. Use `list_projects` to confirm names and catch a mislabeled token -
-it returns each project's name, whether it's the default, and a lazy
-fingerprint (server count and up to two server names, or
+Use `list_projects` to confirm names and catch a mislabeled token - it returns
+each project's `name`, `description` (`null` when unset), `is_default`, and a
+lazy `fingerprint` (server count and up to two server names, or
 `unreachable: <error>`); it never returns a token.
 
-At startup, the server rejects (non-zero exit) an empty entry, a name outside
-`[a-z0-9._-]{1,64}`, a token that isn't exactly 64 characters, a duplicate
-name, a duplicate token, mixing named and unnamed entries, or an
-`HCLOUD_PROJECT` that names a project that isn't configured. Every Form-B
-per-entry rejection cites that entry's 1-based index (the Form-A length error
-and an unconfigured `HCLOUD_PROJECT` carry no index); no rejection ever
-quotes a token.
+`hetzner-mcp` no longer shares `HCLOUD_TOKEN` with the official `hcloud` CLI;
+the two are configured independently.
 
-The multi-value form belongs in your MCP client's `env` block: the official
-`hcloud` CLI reads the same `HCLOUD_TOKEN` variable, cannot parse the
-multi-value form, and fails with a bare `401`. One variable holding several
-secrets also means per-project rotation is a whole-value rewrite.
+## Migrating from 0.3.x
+
+0.4.0 stops reading `HCLOUD_TOKEN`, `HCLOUD_PROJECT` and `HCLOUD_ENDPOINT`.
+Create `~/.config/hetzner-mcp/config.toml` (`chmod 600`) and remove the `env`
+block from your MCP client config:
+
+| 0.3.x | 0.4.0 |
+| --- | --- |
+| `HCLOUD_TOKEN=<token>` | one `[[projects]]` entry; pick any name (the implicit name `default` is gone - e.g. `name = "main"`) |
+| `HCLOUD_TOKEN=prod=<t>,staging=<t>` | one `[[projects]]` entry per pair |
+| `HCLOUD_PROJECT=prod` | top-level `default = "prod"` |
+| `HCLOUD_ENDPOINT=<url>` | top-level `endpoint = "<url>"` |
+
+With a single project, calls may still omit `project`. Saved prompts that pass
+`project = "default"` must use the new name.
 
 ## Tools
 
@@ -285,7 +380,7 @@ object; the allowed actions are noted after each.
 - `get_pricing` - get current Hetzner Cloud pricing for all resource types
 
 **Projects**
-- `list_projects` - list every configured project by name, with `is_default` and a lazy fingerprint (server count and up to two server names, or `unreachable: <error>`). Never returns a token. See [Multiple projects](#multiple-projects)
+- `list_projects` - list every configured project by name and description, with `is_default` and a lazy fingerprint (server count and up to two server names, or `unreachable: <error>`). Never returns a token. See [Multiple projects](#multiple-projects)
 
 ## Coverage
 
@@ -312,18 +407,21 @@ for this server.
   `power_server`) mutate real resources: creates may bill money, deletes are
   permanent, and actions can interrupt workloads - confirm with the user
   before calling any of them. The server never calls any of these on its own.
-- Scope `HCLOUD_TOKEN` to a read-only API token unless you actually need the
-  mutating tools - Hetzner Cloud tokens can be created as read-only per
-  project.
+- Use read-only tokens where possible - Hetzner Cloud tokens can be created
+  as read-only per project - and keep `config.toml` at mode `0600`: it is the
+  only place tokens live.
 
 ## Verify the connection
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
-  | HCLOUD_TOKEN=your-token-here hetzner-mcp
+  | hetzner-mcp
 ```
 
-A JSON line answering with `"name":"hetzner-mcp"` means stdio is healthy.
+A JSON line answering with `"name":"hetzner-mcp"` means stdio is healthy. To
+test a config file that is not at the default path, append
+`--config /path/to/config.toml`. A startup error (missing or invalid file)
+arrives on stderr instead of the JSON line and names the exact path it tried.
 More per-client verification tips: [CONNECT.md](CONNECT.md).
 
 ## Development
@@ -334,8 +432,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The test suite (178 unit tests + 1 integration test) runs entirely against a
-local mock of the Hetzner API - no token and no network access to Hetzner are
+The test suite (unit tests plus the `tests/` integration tests, including the
+`--config` CLI tests that spawn the real binary against a temporary config
+file) runs entirely against a local mock of the Hetzner API - no token, no
+`~/.config/hetzner-mcp/config.toml`, and no network access to Hetzner are
 needed to develop.
 
 ## Privacy Policy
@@ -343,8 +443,9 @@ needed to develop.
 `hetzner-mcp` runs entirely on your machine and collects no telemetry. The only
 third party it contacts is Hetzner (`api.hetzner.cloud`), and only to fulfill
 the requests you make. Your API token is sent solely to Hetzner to authenticate
-those calls; the server writes no files and persists nothing. Full details:
-[PRIVACY.md](PRIVACY.md).
+those calls and is read once at startup from `~/.config/hetzner-mcp/config.toml`
+(or the `--config` path); the server writes no files and persists nothing.
+Full details: [PRIVACY.md](PRIVACY.md).
 
 ## License
 

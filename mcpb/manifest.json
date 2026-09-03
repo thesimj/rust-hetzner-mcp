@@ -2,9 +2,9 @@
   "manifest_version": "0.2",
   "name": "hetzner-mcp",
   "display_name": "Hetzner Cloud",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Manage Hetzner Cloud from Claude: servers, volumes, networks, firewalls, Load Balancers, DNS Zones, and more.",
-  "long_description": "A single Rust binary that exposes the Hetzner Cloud API to Claude over MCP: 93 tools covering servers, images, volumes, networks, firewalls, Floating and Primary IPs, Load Balancers, certificates, SSH keys, placement groups, and DNS Zones. Every tool is safety-annotated (read-only vs mutating), results are plain JSON, and one HCLOUD_TOKEN can hold several projects' tokens (\"prod=<token>,staging=<token>\") with per-call project routing and a list_projects discovery tool. Bring your own Hetzner API token.",
+  "long_description": "A single Rust binary that exposes the Hetzner Cloud API to Claude over MCP: 93 tools covering servers, images, volumes, networks, firewalls, Floating and Primary IPs, Load Balancers, certificates, SSH keys, placement groups, and DNS Zones. Every tool is safety-annotated (read-only vs mutating), results are plain JSON, and projects and their tokens live in ~/.config/hetzner-mcp/config.toml, with per-call project routing and a list_projects discovery tool. Bring your own Hetzner API token.",
   "author": {
     "name": "Nick Bubelich",
     "url": "https://github.com/thesimj"
@@ -30,11 +30,10 @@
     "entry_point": "bin/hetzner-mcp",
     "mcp_config": {
       "command": "${__dirname}/bin/hetzner-mcp",
-      "args": [],
-      "env": {
-        "HCLOUD_TOKEN": "${user_config.hcloud_token}",
-        "HCLOUD_PROJECT": "${user_config.hcloud_project}"
-      }
+      "args": [
+        "--config",
+        "${user_config.config_file}"
+      ]
     }
   },
   "tools_generated": false,
@@ -301,7 +300,7 @@
     },
     {
       "name": "list_projects",
-      "description": "List every configured Hetzner project by name, with a cheap fingerprint (server count and up to two server names) to catch a mislabeled token. Never returns a token."
+      "description": "List every configured Hetzner project by name and description, with a cheap fingerprint (server count and up to two server names) to catch a mislabeled token. Never returns a token."
     },
     {
       "name": "list_server_types",
@@ -413,18 +412,12 @@
     }
   ],
   "user_config": {
-    "hcloud_token": {
-      "type": "string",
-      "title": "Hetzner Cloud API Token",
-      "description": "A 64-character API token from your Hetzner Cloud project (Security -> API tokens). For several projects at once use \"name=<token>,name=<token>\".",
+    "config_file": {
+      "type": "file",
+      "title": "hetzner-mcp config file (config.toml)",
+      "description": "TOML file listing your Hetzner projects and API tokens - create it first (README > Configuration). Default: ~/.config/hetzner-mcp/config.toml. Keep it readable only by you (chmod 600). If the file picker does not show the .config folder, press Cmd+Shift+. (macOS) or enable hidden items (Windows), or paste the path.",
       "required": true,
-      "sensitive": true
-    },
-    "hcloud_project": {
-      "type": "string",
-      "title": "Default project name (optional)",
-      "description": "Only meaningful with the multi-project token form: read-only tools then use this project when no project argument is given. Leave empty otherwise.",
-      "required": false,
+      "default": "${HOME}/.config/hetzner-mcp/config.toml",
       "sensitive": false
     }
   },

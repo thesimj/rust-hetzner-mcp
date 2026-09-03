@@ -1,5 +1,9 @@
 # Specification: multi-project support (`HCLOUD_TOKEN` with several keys)
 
+> **Status (0.4.0):** section 3 (configuration via `HCLOUD_TOKEN` / `HCLOUD_PROJECT`) and every `HCLOUD_ENDPOINT` mention are superseded by [`docs/config-file-spec.md`](config-file-spec.md) -
+> configuration now comes from `~/.config/hetzner-mcp/config.toml` (README > Configuration); no environment variables are read for credentials.
+> Sections 4-9 (per-call routing, pin semantics, schema injection, result echo, `list_projects`) still describe current behaviour.
+
 Status: **ready to implement** | Target version: 0.3.0 | Written: 2026-08-21
 Basis: research report + adversarial verification, including a compiling spike
 (`cargo build`/`clippy` clean, 133 existing tests unchanged) that demonstrated

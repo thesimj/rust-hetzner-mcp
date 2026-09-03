@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-08-21_
+_Last updated: 2026-09-03_
 
 `hetzner-mcp` is a local Model Context Protocol (MCP) server that runs
 entirely on your own machine. It is a thin client for the
@@ -15,7 +15,7 @@ its own.
 ## What the software sends, and to whom
 
 `hetzner-mcp` communicates with exactly one third party - **Hetzner**
-(`api.hetzner.cloud`, or the endpoint you set via `HCLOUD_ENDPOINT`), plus any
+(`api.hetzner.cloud`, or the `endpoint` you set in `config.toml`), plus any
 HTTP proxy you yourself configure via `HTTP_PROXY`/`HTTPS_PROXY`, which the
 underlying HTTP client honours - and only
 to perform the actions you (or your AI assistant) explicitly request: listing
@@ -36,9 +36,12 @@ Hetzner's handling of this data is governed by Hetzner's own
 
 ## Where data is stored
 
-- **API token**: read from the `HCLOUD_TOKEN` environment variable your MCP
-  client provides. The server does not read `.env` files and does not persist
-  the token.
+- **API token**: read once at startup from `~/.config/hetzner-mcp/config.toml`
+  (`$XDG_CONFIG_HOME/hetzner-mcp/config.toml` if set, or the path you pass with
+  `--config`) - a file you create and own. The server only reads that file,
+  never writes it, never reads `.env` files or environment variables for
+  credentials, and does not persist tokens anywhere else. Startup errors name
+  the file path and the offending entry by index or name, never a token.
 - **Everything else**: nothing. The server writes no files, keeps no caches,
   and holds no state beyond the lifetime of a single request.
 

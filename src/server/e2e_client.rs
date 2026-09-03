@@ -4,14 +4,21 @@
 //! itself rather than calling a tool method directly. Needs rmcp's "client"
 //! feature, added as a dev-dependency only (never ships in the binary).
 
-use std::collections::BTreeMap;
-
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, Implementation};
 
 use super::test_support::project_token;
 use super::{HcloudServer, Projects};
+use crate::config::Project;
 use crate::hcloud::HcloudClient;
+
+fn project(name: &str) -> Project {
+    Project {
+        name: name.to_string(),
+        token: project_token(name),
+        description: None,
+    }
+}
 
 /// Startup is lazy: building the server and completing the real MCP
 /// handshake (initialize + tools/list) must send zero HTTP requests. The
@@ -20,8 +27,7 @@ use crate::hcloud::HcloudClient;
 async fn startup_and_handshake_send_no_http_requests() {
     let mock = wiremock::MockServer::start().await;
 
-    let tokens = BTreeMap::from([("prod".to_string(), project_token("prod"))]);
-    let projects = Projects { tokens, pin: None };
+    let projects = Projects::new(vec![project("prod")], None);
     let client = HcloudClient::new(mock.uri(), project_token("prod")).unwrap();
     let server = HcloudServer::new(client, projects);
 
@@ -71,11 +77,7 @@ async fn initialize_list_and_call_flow_through_the_real_call_tool() {
         .mount(&mock)
         .await;
 
-    let tokens = BTreeMap::from([
-        ("prod".to_string(), project_token("prod")),
-        ("staging".to_string(), project_token("staging")),
-    ]);
-    let projects = Projects { tokens, pin: None };
+    let projects = Projects::new(vec![project("prod"), project("staging")], None);
     let client = HcloudClient::new(mock.uri(), project_token("prod")).unwrap();
     let server = HcloudServer::new(client, projects);
 
