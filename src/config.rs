@@ -307,6 +307,14 @@ pub fn load(override_path: Option<&Path>) -> Result<Config> {
     let abs = std::path::absolute(&path)
         .with_context(|| format!("cannot resolve config file path {}", path.display()))?;
     let shown = abs.display();
+    // Checked up front: reading a directory reports EISDIR on Unix but
+    // NotFound on Windows, and the not-found hint would be wrong here.
+    if abs.is_dir() {
+        bail!(
+            "config path {shown} is a directory, not a file; \
+             pass the config.toml inside it with: hetzner-mcp --config <path>"
+        );
+    }
     let text = match std::fs::read_to_string(&abs) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
@@ -846,7 +854,7 @@ token = "2222222222222222222222222222222222222222222222222222222222222222"
 
     // 24d
     #[test]
-    fn load_reports_non_utf8_and_other_io_errors_with_the_path() {
+    fn load_reports_non_utf8_and_directory_paths_with_the_path() {
         // UTF-16 with a BOM, as Windows PowerShell 5.1 `Out-File` writes it.
         let utf16 = TempFile::new(b"\xff\xfe[[projects]]\n");
         let err = format!("{:#}", load(Some(&utf16.0)).unwrap_err());
@@ -858,12 +866,12 @@ token = "2222222222222222222222222222222222222222222222222222222222222222"
             "no example for a present file: {err}"
         );
 
-        // Any other I/O error (a directory here) gets the path and the OS
-        // message but not the UTF-8 hint.
+        // A directory is reported as such on every platform (Unix says
+        // EISDIR, Windows says NotFound - neither hint would be right).
         let dir = std::env::temp_dir();
         let shown = std::path::absolute(&dir).unwrap().display().to_string();
         let err = format!("{:#}", load(Some(&dir)).unwrap_err());
-        assert!(err.contains("cannot read config file"), "{err}");
+        assert!(err.contains("is a directory, not a file"), "{err}");
         assert!(err.contains(&shown), "{err}");
         assert!(!err.contains("must be UTF-8"), "{err}");
         assert!(!err.contains("config file not found"), "{err}");

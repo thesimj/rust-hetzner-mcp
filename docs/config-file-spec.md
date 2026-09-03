@@ -140,6 +140,7 @@ Every message is built from our own literals plus: an absolute path, a 1-based i
   # description = "optional, shown to the model"
   ```
 - `io::ErrorKind::InvalidData` (typically UTF-16 written by Windows PowerShell 5.1 `Out-File`): `cannot read config file {abs_path}: {io error} (the file must be UTF-8; on Windows use Set-Content -Encoding utf8 or an editor that saves UTF-8)`. A UTF-8 BOM and CRLF line endings are accepted by `toml` (verified: `toml_parser` strips the BOM at `src/lexer/mod.rs:35`; pinned by test 1b at both the `parse` and `load` layers).
+- A directory: `config path {abs_path} is a directory, not a file; pass the config.toml inside it with: hetzner-mcp --config <path>` (checked with `is_dir()` before reading - Unix reports EISDIR but Windows reports NotFound, so neither generic arm would give the right hint).
 - Any other I/O error: `cannot read config file {abs_path}: {io error}` (std `io::Error` Display never includes content).
 - Parse/validation failure: anyhow context `invalid config file {abs_path}` wrapping the message below (stderr shows `Error: invalid config file ...\n\nCaused by:\n    <message>`).
 
@@ -348,7 +349,7 @@ Write each test first; one behaviour each. Tokens in tests are obviously fake. H
     - 24a `load_prefixes_parse_errors_with_the_absolute_path` - temp file with a bad config -> Err chain starts `invalid config file <abs path>` and contains `missing field \`token\``.
     - 24b `load_reads_a_valid_file` - valid file -> Ok(1 project named `main`).
     - 24c `load_reports_a_missing_file_with_example_and_config_hint` - nonexistent path -> Err containing `config file not found`, the path, `[[projects]]` and `--config`.
-    - 24d `load_reports_non_utf8_and_other_io_errors_with_the_path` - file starting `FF FE` (UTF-16 BOM) -> Err containing `cannot read config file`, the path and `must be UTF-8`, no example; a directory path -> Err containing `cannot read config file` and the path, neither `must be UTF-8` nor `config file not found`.
+    - 24d `load_reports_non_utf8_and_directory_paths_with_the_path` - file starting `FF FE` (UTF-16 BOM) -> Err containing `cannot read config file`, the path and `must be UTF-8`, no example; a directory path -> Err containing `is a directory, not a file` and the path, neither `must be UTF-8` nor `config file not found` (platform-independent: the v0.4.0/v0.4.1 Windows release jobs failed on the earlier EISDIR assumption).
 
 **`cli::tests`**
 25. `no_args_means_serve_with_the_default_config` - `[]` -> `Serve { config: None }`.
