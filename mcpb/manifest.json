@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "hetzner-mcp",
   "display_name": "Hetzner Cloud",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Manage Hetzner Cloud from Claude: servers, volumes, networks, firewalls, Load Balancers, DNS Zones, and more.",
   "long_description": "A single Rust binary that exposes the Hetzner Cloud API to Claude over MCP: 93 tools covering servers, images, volumes, networks, firewalls, Floating and Primary IPs, Load Balancers, certificates, SSH keys, placement groups, and DNS Zones. Every tool is safety-annotated (read-only vs mutating), results are plain JSON, and projects and their tokens live in ~/.config/hetzner-mcp/config.toml, with per-call project routing and a list_projects discovery tool. Bring your own Hetzner API token.",
   "author": {
