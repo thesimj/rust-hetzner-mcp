@@ -145,13 +145,30 @@ pub(crate) fn resolve_endpoint(override_: Option<&str>) -> Result<String> {
     else {
         return Ok(BASE_URL.to_string());
     };
-    if !v.starts_with("https://") && !is_loopback_http(v) {
+    if !is_https_with_host(v) && !is_loopback_http(v) {
         bail!(
             "endpoint must use https:// (or http:// to 127.0.0.1/::1/localhost), got {}",
             endpoint_origin(v)
         );
     }
     Ok(v.to_string())
+}
+
+/// `https://` **with a host reqwest will accept**. The literal prefix keeps
+/// the scheme check case-sensitive (`url::Url` case-folds, so a bare
+/// `url.scheme()` test would start accepting `HTTPS://`); `url::Url` then
+/// rejects what a prefix test cannot see - an authority that does not parse,
+/// e.g. `https:// api.hetzner.cloud/v1` (a wrapped or space-mangled line) or
+/// `https://%%%/v1`. Those used to pass startup validation and fail only on
+/// the first tool call, as a `builder error: invalid international domain
+/// name` that never mentions the config file.
+fn is_https_with_host(v: &str) -> bool {
+    v.starts_with("https://") && has_host(v)
+}
+
+/// Whether `v` parses as a URL with a non-empty authority.
+fn has_host(v: &str) -> bool {
+    url::Url::parse(v).is_ok_and(|u| u.host_str().is_some_and(|h| !h.is_empty()))
 }
 
 /// What a rejected `endpoint` is described as: `scheme://host` only. Userinfo,
@@ -173,7 +190,7 @@ fn endpoint_origin(v: &str) -> String {
         }
     };
     let scheme = shown(url.scheme());
-    match url.host_str() {
+    match url.host_str().filter(|h| !h.is_empty()) {
         Some(host) => format!("{scheme}://{}", shown(host)),
         None => format!("{scheme}: with no host"),
     }
@@ -258,6 +275,25 @@ mod tests {
         assert!(msg.contains("got http://api.hetzner.cloud"), "got: {err}");
         assert!(!msg.contains("/v1"), "the path is not echoed, got: {err}");
         assert!(!msg.contains("HCLOUD"), "got: {err}");
+    }
+
+    /// An `https://` value whose authority does not parse is rejected at
+    /// startup, not on the first tool call - the prefix test alone let a
+    /// space-mangled line through, and the failure then surfaced much later
+    /// as a reqwest builder error that never named the config file.
+    #[test]
+    fn endpoint_rejects_an_https_value_with_no_usable_host() {
+        for bad in ["https:// api.hetzner.cloud/v1", "https://%%%/v1"] {
+            let err = resolve_endpoint(Some(bad)).expect_err(bad);
+            assert!(err.to_string().contains("https://"), "{bad} got: {err}");
+        }
+        // Still accepted: a well-formed host, with or without a port or path.
+        for good in [
+            "https://internal.example",
+            "https://internal.example:8443/v1",
+        ] {
+            assert_eq!(resolve_endpoint(Some(good)).unwrap(), good);
+        }
     }
 
     /// The rejection names only `scheme://host`: userinfo, path and query are

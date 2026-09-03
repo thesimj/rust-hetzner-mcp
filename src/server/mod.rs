@@ -163,10 +163,15 @@ fn read_only(tool: &rmcp::model::Tool) -> bool {
 /// `list_projects`. Schema only - no Rust struct declares `project` (T15);
 /// a strict-validation rmcp upgrade would break all 92 tools at once.
 fn inject_project_property(router: &mut ToolRouter<HcloudServer>, projects: &Projects) {
-    let description = format!(
-        "Which configured Hetzner project to act on - one of: {}. Call list_projects if unsure.",
-        projects.names_with_descriptions()
-    );
+    // Built once and cloned per tool: identical for all 92 of them.
+    let property = serde_json::json!({
+        "type": "string",
+        "enum": projects.names(),
+        "description": format!(
+            "Which configured Hetzner project to act on - one of: {}. Call list_projects if unsure.",
+            projects.names_with_descriptions()
+        ),
+    });
     for route in router.map.values_mut() {
         if route.attr.name == LIST_PROJECTS {
             continue;
@@ -179,14 +184,7 @@ fn inject_project_property(router: &mut ToolRouter<HcloudServer>, projects: &Pro
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .expect("tool input schema \"properties\" must be a JSON object")
-            .insert(
-                "project".to_string(),
-                serde_json::json!({
-                    "type": "string",
-                    "enum": projects.names(),
-                    "description": description,
-                }),
-            );
+            .insert("project".to_string(), property.clone());
         if required {
             schema
                 .entry("required".to_string())
