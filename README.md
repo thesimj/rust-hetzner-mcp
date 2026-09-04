@@ -108,24 +108,29 @@ opencode, Crush, Amp, and OpenHands.
 
 ## Configuration
 
-`hetzner-mcp` reads exactly one file at startup and nothing else - no
-environment variables, no `.env`. It never writes the file and never copies
-tokens anywhere else.
+`hetzner-mcp` reads exactly one file at startup for credentials - no
+environment variables, no `.env`. The only environment it consults is
+`XDG_CONFIG_HOME`/`HOME` to locate that file, plus the standard
+`HTTP_PROXY`/`HTTPS_PROXY` variables that the HTTP client honours. It never
+writes the file and never copies tokens anywhere else.
 
 ### Where the file lives
 
 | Platform | Default path |
 | --- | --- |
-| Linux, macOS | `$XDG_CONFIG_HOME/hetzner-mcp/config.toml` if `XDG_CONFIG_HOME` is set and non-empty, else `~/.config/hetzner-mcp/config.toml` |
-| Windows | `%USERPROFILE%\.config\hetzner-mcp\config.toml` |
+| Any | `$XDG_CONFIG_HOME/hetzner-mcp/config.toml` if `XDG_CONFIG_HOME` is set and non-empty |
+| Linux, macOS | else `~/.config/hetzner-mcp/config.toml` |
+| Windows | else `%USERPROFILE%\.config\hetzner-mcp\config.toml` |
 | Any | `hetzner-mcp --config /path/to/config.toml` overrides the lookup |
 
 Use an absolute path with `--config` - MCP clients start the server from an
 arbitrary working directory. Every startup error prints the resolved absolute
 path it tried, and `hetzner-mcp --help` prints the default path for your
 machine. A missing file is reported with a minimal example and the `--config`
-hint; a file that is not UTF-8 (a common Windows editor default) is rejected
-with a hint to re-save it as UTF-8.
+hint; a path that is a directory is rejected as such; a file that is not UTF-8
+(a common Windows editor default) is rejected with a hint to re-save it as
+UTF-8. The server does **not** check the file's permissions - keeping it at
+mode `0600` is up to you.
 
 ### Example
 
@@ -206,10 +211,12 @@ Create an API token in the Hetzner Cloud Console, per
 Tokens are per-project and come in two flavors - **read-only** covers every
 `list_*`/`get_*` tool; pick **read & write** only if you need the mutating
 tools. `config.toml` is the only place tokens live: keep it at mode `0600`
-(`chmod 600 ~/.config/hetzner-mcp/config.toml`), never commit it to any
-repository, and rotate a project by editing its `token` line and restarting the
-client. The token is sent solely to the Hetzner
-API as a bearer header; it is never logged or written anywhere.
+(`chmod 600 ~/.config/hetzner-mcp/config.toml` - the server reads a
+world-readable file without complaint, it does not enforce this), never commit
+it to any repository, and rotate a project by editing its `token` line and
+restarting the client (the file is read once at startup). The token is sent
+solely to the Hetzner API as a bearer header; it is never logged or written
+anywhere.
 
 ## Multiple projects
 

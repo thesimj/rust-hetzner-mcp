@@ -12,7 +12,6 @@ homepage = "https://github.com/thesimj/rust-hetzner-mcp"
 readme = "README.md"
 keywords = ["mcp", "hetzner", "hcloud", "cloud", "ai"]
 categories = ["api-bindings", "command-line-utilities"]
-exclude = ["docs/"]
 
 [[bin]]
 name = "hetzner-mcp"

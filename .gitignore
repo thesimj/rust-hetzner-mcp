@@ -19,8 +19,8 @@ debug/
 
 # Local secrets (config.toml, .env) - never commit; credentials live in
 # ~/.config/hetzner-mcp/config.toml, but a repo-local copy used with
-# `hetzner-mcp --config ./config.toml` must never land in git either.
-/config.toml
+# `hetzner-mcp --config ./config.toml` (at any depth) must never land in git.
+config.toml
 .env
 .env.*
 
@@ -39,3 +39,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Internal design notes and review transcripts - local only, not published.
+docs/

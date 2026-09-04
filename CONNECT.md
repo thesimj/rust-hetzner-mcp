@@ -247,8 +247,8 @@ default path:
 
 ```bash
 mkdir -p ~/.config/hetzner-mcp
-printf '%s\n' "$HETZNER_MCP_CONFIG" > ~/.config/hetzner-mcp/config.toml
-chmod 600 ~/.config/hetzner-mcp/config.toml
+# umask first: the file is created private, with no window at the default mode
+(umask 077; printf '%s\n' "$HETZNER_MCP_CONFIG" > ~/.config/hetzner-mcp/config.toml)
 ```
 
 In a container, mount the file read-only instead and point the server at it:
