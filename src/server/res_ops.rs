@@ -16,7 +16,8 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActionArgs, HcloudServer, IdArgs, action_body, check_action, require_update_fields, respond,
+    ActionArgs, HcloudServer, IdArgs, action_body, check_action, json_body, require_update_fields,
+    respond,
 };
 
 const IMAGE_ACTIONS: [&str; 1] = ["change_protection"];
@@ -128,8 +129,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateImageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/images/{id}"), body).await)
     }
@@ -190,8 +190,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateNameLabelsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/ssh_keys/{id}"), body).await)
     }
@@ -217,8 +216,7 @@ impl HcloudServer {
                 None,
             ));
         }
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/volumes", body).await)
     }
 
@@ -238,8 +236,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateNameLabelsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/volumes/{id}"), body).await)
     }
@@ -299,8 +296,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreatePlacementGroupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/placement_groups", body).await)
     }
 
@@ -320,8 +316,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateNameLabelsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(
             self.client
@@ -376,8 +371,7 @@ impl HcloudServer {
             }
             _ => {}
         }
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/certificates", body).await)
     }
 
@@ -397,8 +391,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateNameLabelsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/certificates/{id}"), body).await)
     }

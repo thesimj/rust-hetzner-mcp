@@ -1,4 +1,4 @@
-//! Infra tools: locations, datacenters, volumes, networks, firewalls.
+//! Infra tools: locations, volumes, networks, firewalls.
 //! Implemented in milestone M3b (brief B4).
 //!
 //! Args structs are shared across tools with the same shape (`IdArgs` for
@@ -13,7 +13,43 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, IdArgs, PageArgs, pagination_query, push_param, respond};
+use super::{HcloudServer, IdArgs, pagination_query, push_param, push_params, respond};
+
+/// Filters for list_locations: exact name, sort, and pagination.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListLocationsArgs {
+    /// Exact location name to filter by, e.g. "fsn1".
+    pub name: Option<String>,
+    /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
+    pub sort: Option<Vec<String>>,
+    /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
+
+/// Filters for list_network_members; every filter is repeatable.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListNetworkMembersArgs {
+    /// Numeric ID of the network, from list_networks.
+    pub id: u64,
+    /// Filter by member type: "server" or "load_balancer"; repeatable.
+    pub r#type: Option<Vec<String>>,
+    /// Filter by the subnet's IP range in CIDR notation, e.g. "10.0.1.0/24"; repeatable.
+    pub subnet: Option<Vec<String>>,
+    /// Filter by attachment status (ok|attaching|detaching|updating|error); repeatable.
+    pub status: Option<Vec<String>>,
+    /// Sort by id, type, status, or ip, e.g. "ip:asc"; repeatable.
+    pub sort: Option<Vec<String>>,
+    /// Page number to fetch, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page, up to 50 (API default 25).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
 
 /// Pagination plus name/label/sort filters, shared by list_networks and
 /// list_firewalls (identical filter sets per spec). list_volumes adds
@@ -38,9 +74,7 @@ fn label_page_query(args: LabelPageArgs) -> Result<Vec<(&'static str, String)>, 
     let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
-    for sort in args.sort.into_iter().flatten() {
-        push_param(&mut q, "sort", Some(sort));
-    }
+    push_params(&mut q, "sort", args.sort);
     Ok(q)
 }
 
@@ -67,7 +101,8 @@ pub(crate) struct ListVolumesArgs {
 #[tool_router(router = infra_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
-        description = "List locations Hetzner Cloud resources can run in.",
+        description = "List locations Hetzner Cloud resources can run in, optionally \
+        filtered by name or sorted.",
         annotations(
             title = "List locations",
             read_only_hint = true,
@@ -77,9 +112,11 @@ impl HcloudServer {
     )]
     async fn list_locations(
         &self,
-        Parameters(args): Parameters<PageArgs>,
+        Parameters(args): Parameters<ListLocationsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page)?;
+        let mut query = pagination_query(args.page, args.per_page)?;
+        push_param(&mut query, "name", args.name);
+        push_params(&mut query, "sort", args.sort);
         respond(self.client.get("/locations", &query).await)
     }
 
@@ -104,43 +141,6 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List datacenters Hetzner Cloud resources can run in.",
-        annotations(
-            title = "List datacenters",
-            read_only_hint = true,
-            destructive_hint = false,
-            open_world_hint = true
-        )
-    )]
-    async fn list_datacenters(
-        &self,
-        Parameters(args): Parameters<PageArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page)?;
-        respond(self.client.get("/datacenters", &query).await)
-    }
-
-    #[tool(
-        description = "Get a single datacenter by ID.",
-        annotations(
-            title = "Get datacenter",
-            read_only_hint = true,
-            destructive_hint = false,
-            open_world_hint = true
-        )
-    )]
-    async fn get_datacenter(
-        &self,
-        Parameters(args): Parameters<IdArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        respond(
-            self.client
-                .get(&format!("/datacenters/{}", args.id), &[])
-                .await,
-        )
-    }
-
-    #[tool(
         description = "List block storage volumes, optionally filtered by name, label \
         selector, sort, or status.",
         annotations(
@@ -157,12 +157,8 @@ impl HcloudServer {
         let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
-        for sort in args.sort.into_iter().flatten() {
-            push_param(&mut query, "sort", Some(sort));
-        }
-        for status in args.status.into_iter().flatten() {
-            push_param(&mut query, "status", Some(status));
-        }
+        push_params(&mut query, "sort", args.sort);
+        push_params(&mut query, "status", args.status);
         respond(self.client.get("/volumes", &query).await)
     }
 
@@ -221,6 +217,33 @@ impl HcloudServer {
     }
 
     #[tool(
+        description = "List the servers and Load Balancers attached to a network, with \
+        each member's private IP, alias IPs, subnet, and attachment status. Optionally \
+        filtered by type, subnet, or status.",
+        annotations(
+            title = "List network members",
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn list_network_members(
+        &self,
+        Parameters(args): Parameters<ListNetworkMembersArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut query = pagination_query(args.page, args.per_page)?;
+        push_params(&mut query, "type", args.r#type);
+        push_params(&mut query, "subnet", args.subnet);
+        push_params(&mut query, "status", args.status);
+        push_params(&mut query, "sort", args.sort);
+        respond(
+            self.client
+                .get(&format!("/networks/{}/members", args.id), &query)
+                .await,
+        )
+    }
+
+    #[tool(
         description = "List firewalls, optionally filtered by name, label selector, or sort.",
         annotations(
             title = "List firewalls",
@@ -265,7 +288,9 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::test_support::{server_for, tool_result_json};
-    use super::{IdArgs, LabelPageArgs, ListVolumesArgs, PageArgs};
+    use super::{
+        IdArgs, LabelPageArgs, ListLocationsArgs, ListNetworkMembersArgs, ListVolumesArgs,
+    };
 
     /// Every list_* tool forwards page/per_page (and label_selector, where the
     /// tool takes one) verbatim, and passes the response envelope through.
@@ -274,19 +299,12 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/locations"))
+            .and(query_param("name", "fsn1"))
+            .and(query_param("sort", "name:asc"))
             .and(query_param("page", "1"))
             .and(query_param("per_page", "25"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "locations": [{"id": 1}]
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/datacenters"))
-            .and(query_param("page", "2"))
-            .and(query_param("per_page", "30"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "datacenters": [{"id": 2}]
             })))
             .mount(&server)
             .await;
@@ -332,7 +350,9 @@ mod tests {
         assert_eq!(
             tool_result_json(
                 &hcloud
-                    .list_locations(Parameters(PageArgs {
+                    .list_locations(Parameters(ListLocationsArgs {
+                        name: Some("fsn1".to_string()),
+                        sort: Some(vec!["name:asc".to_string()]),
                         page: Some(1),
                         per_page: Some(25)
                     }))
@@ -340,18 +360,6 @@ mod tests {
                     .unwrap()
             ),
             serde_json::json!({"locations": [{"id": 1}]})
-        );
-        assert_eq!(
-            tool_result_json(
-                &hcloud
-                    .list_datacenters(Parameters(PageArgs {
-                        page: Some(2),
-                        per_page: Some(30)
-                    }))
-                    .await
-                    .unwrap()
-            ),
-            serde_json::json!({"datacenters": [{"id": 2}]})
         );
         assert_eq!(
             tool_result_json(
@@ -438,10 +446,6 @@ mod tests {
         let server = MockServer::start().await;
         for (route, envelope) in [
             ("/locations/42", serde_json::json!({"location": {"id": 42}})),
-            (
-                "/datacenters/7",
-                serde_json::json!({"datacenter": {"id": 7}}),
-            ),
             ("/volumes/3", serde_json::json!({"volume": {"id": 3}})),
             ("/networks/5", serde_json::json!({"network": {"id": 5}})),
             ("/firewalls/8", serde_json::json!({"firewall": {"id": 8}})),
@@ -462,15 +466,6 @@ mod tests {
                     .unwrap()
             ),
             serde_json::json!({"location": {"id": 42}})
-        );
-        assert_eq!(
-            tool_result_json(
-                &hcloud
-                    .get_datacenter(Parameters(IdArgs { id: 7 }))
-                    .await
-                    .unwrap()
-            ),
-            serde_json::json!({"datacenter": {"id": 7}})
         );
         assert_eq!(
             tool_result_json(
@@ -511,6 +506,45 @@ mod tests {
         );
     }
 
+    /// GET /networks/{id}/members (2026-09-15): every filter is repeatable,
+    /// and the network id lands in the path, not the query.
+    #[tokio::test]
+    async fn list_network_members_sends_repeated_filters_to_the_members_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/networks/5/members"))
+            .and(query_param("type", "server"))
+            .and(query_param("type", "load_balancer"))
+            .and(query_param("subnet", "10.0.1.0/24"))
+            .and(query_param("status", "ok"))
+            .and(query_param("sort", "ip:asc"))
+            .and(query_param("per_page", "50"))
+            .and(query_param_is_missing("id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "members": [{"type": "server", "id": 42, "ip": "10.0.1.2"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let hcloud = server_for(server.uri());
+        let res = hcloud
+            .list_network_members(Parameters(ListNetworkMembersArgs {
+                id: 5,
+                r#type: Some(vec!["server".to_string(), "load_balancer".to_string()]),
+                subnet: Some(vec!["10.0.1.0/24".to_string()]),
+                status: Some(vec!["ok".to_string()]),
+                sort: Some(vec!["ip:asc".to_string()]),
+                page: None,
+                per_page: Some(50),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_result_json(&res),
+            serde_json::json!({"members": [{"type": "server", "id": 42, "ip": "10.0.1.2"}]})
+        );
+    }
+
     #[tokio::test]
     async fn get_location_maps_upstream_errors_to_a_tool_error_result() {
         let server = MockServer::start().await;
@@ -534,21 +568,20 @@ mod tests {
     }
 
     #[test]
-    fn infra_router_registers_all_ten_tools_with_read_only_annotations() {
+    fn infra_router_registers_all_nine_tools_with_read_only_annotations() {
         let router = super::HcloudServer::infra_router();
         let names = [
             "list_locations",
             "get_location",
-            "list_datacenters",
-            "get_datacenter",
             "list_volumes",
             "get_volume",
             "list_networks",
             "get_network",
+            "list_network_members",
             "list_firewalls",
             "get_firewall",
         ];
-        assert_eq!(router.list_all().len(), 10);
+        assert_eq!(router.list_all().len(), 9);
         for name in names {
             let tool = router
                 .get(name)

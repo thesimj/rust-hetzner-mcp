@@ -8,7 +8,7 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, push_param, require_update_fields, respond};
+use super::{HcloudServer, IdArgs, json_body, push_param, require_update_fields, respond};
 
 /// The full set of `POST /servers/{id}/actions/*` commands in the spec.
 /// power_server already covers poweron/poweroff/reboot/shutdown; this tool
@@ -107,8 +107,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateServerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/servers/{id}"), body).await)
     }
@@ -174,7 +173,8 @@ impl HcloudServer {
         change_type requires the server powered off; reset is an ungraceful hard \
         power cycle, not a clean reboot; for poweron/poweroff/reboot/shutdown use \
         power_server. params carries the per-action request body (e.g. {\"image\": \
-        \"ubuntu-24.04\"} for rebuild); omit it for actions with no body.",
+        \"ubuntu-24.04\"} for rebuild); omit it for actions with no body. \
+        change_dns_ptr requires `ip` and `dns_ptr` in params (dns_ptr null resets it).",
         annotations(
             title = "Run server action",
             read_only_hint = false,

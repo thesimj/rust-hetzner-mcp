@@ -14,7 +14,9 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ActionArgs, HcloudServer, IdArgs, action_body, require_update_fields, respond};
+use super::{
+    ActionArgs, HcloudServer, IdArgs, action_body, json_body, require_update_fields, respond,
+};
 
 const NETWORK_ACTIONS: [&str; 6] = [
     "add_route",
@@ -35,7 +37,8 @@ pub(crate) struct CreateNetworkArgs {
     pub name: String,
     /// IP range of the whole network in CIDR notation, e.g. "10.0.0.0/16".
     pub ip_range: String,
-    /// Subnets to create along with the network.
+    /// Subnets to create along with the network. Use type "cloud"; type
+    /// "server" is deprecated and the API removes it on 2027-04-15.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subnets: Option<Vec<Value>>,
     /// Routes to create along with the network.
@@ -136,8 +139,8 @@ pub(crate) struct CreatePrimaryIpArgs {
     pub name: String,
     /// Primary IP type: "ipv4" or "ipv6".
     pub r#type: String,
-    /// Type of resource to assign the Primary IP to: "server" is the only
-    /// accepted value. Omit to leave unassigned.
+    /// Type of resource to assign the Primary IP to: "server". Omit it, or
+    /// pass "unassigned", to leave the Primary IP unassigned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee_type: Option<String>,
     /// ID of the resource to assign the Primary IP to.
@@ -188,8 +191,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateNetworkArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/networks", body).await)
     }
 
@@ -209,8 +211,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateNetworkArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/networks/{id}"), body).await)
     }
@@ -234,6 +235,7 @@ impl HcloudServer {
     #[tool(
         description = "Run an action on a network: add_route, add_subnet, \
         change_ip_range, change_protection, delete_route, or delete_subnet. \
+        For add_subnet use type \"cloud\"; type \"server\" is deprecated. \
         `params` carries the action's body, e.g. {\"destination\":..,\"gateway\":..} \
         for add_route or {\"ip_range\":..} for change_ip_range.",
         annotations(
@@ -272,8 +274,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateFirewallArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/firewalls", body).await)
     }
 
@@ -293,8 +294,7 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateFirewallArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/firewalls/{id}"), body).await)
     }
@@ -364,8 +364,7 @@ impl HcloudServer {
                 None,
             ));
         }
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/floating_ips", body).await)
     }
 
@@ -385,14 +384,14 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateFloatingIpArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/floating_ips/{id}"), body).await)
     }
 
     #[tool(
-        description = "Delete a Floating IP permanently.",
+        description = "Delete a Floating IP permanently. An assigned Floating IP must be \
+        unassigned first.",
         annotations(
             title = "Delete Floating IP",
             read_only_hint = false,
@@ -409,7 +408,7 @@ impl HcloudServer {
 
     #[tool(
         description = "Run an action on a Floating IP: assign, unassign, \
-        change_dns_ptr, or change_protection.",
+        change_dns_ptr, or change_protection. change_dns_ptr requires `ip` and `dns_ptr` in params (dns_ptr null resets it).",
         annotations(
             title = "Floating IP action",
             read_only_hint = false,
@@ -452,8 +451,7 @@ impl HcloudServer {
                 None,
             ));
         }
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/primary_ips", body).await)
     }
 
@@ -473,14 +471,14 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdatePrimaryIpArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let id = args.id;
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&format!("/primary_ips/{id}"), body).await)
     }
 
     #[tool(
-        description = "Delete a Primary IP permanently.",
+        description = "Delete a Primary IP permanently. An assigned Primary IP must be \
+        unassigned first.",
         annotations(
             title = "Delete Primary IP",
             read_only_hint = false,
@@ -497,7 +495,7 @@ impl HcloudServer {
 
     #[tool(
         description = "Run an action on a Primary IP: assign, unassign, \
-        change_dns_ptr, or change_protection.",
+        change_dns_ptr, or change_protection. change_dns_ptr requires `ip` and `dns_ptr` in params (dns_ptr null resets it).",
         annotations(
             title = "Primary IP action",
             read_only_hint = false,

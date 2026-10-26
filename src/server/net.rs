@@ -16,7 +16,7 @@ use rmcp::{ErrorData, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{HcloudServer, IdArgs, pagination_query, push_param, respond};
+use super::{HcloudServer, IdArgs, pagination_query, push_param, push_params, respond};
 
 /// Pagination plus name/label/sort filters, shared by list_floating_ips and
 /// list_load_balancers.
@@ -43,9 +43,7 @@ fn name_label_sort_query(
     let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
-    for sort in args.sort.into_iter().flatten() {
-        push_param(&mut q, "sort", Some(sort));
-    }
+    push_params(&mut q, "sort", args.sort);
     Ok(q)
 }
 
@@ -138,9 +136,7 @@ impl HcloudServer {
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
         push_param(&mut query, "ip", args.ip);
-        for sort in args.sort.into_iter().flatten() {
-            push_param(&mut query, "sort", Some(sort));
-        }
+        push_params(&mut query, "sort", args.sort);
         respond(self.client.get("/primary_ips", &query).await)
     }
 

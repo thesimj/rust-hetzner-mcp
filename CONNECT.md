@@ -292,7 +292,7 @@ Most clients use `command` under a `mcpServers` object (`hetzner-mcp` needs no
 
 ## Verify the connection
 
-Most clients list discovered tools after connecting. You should see 93 tools
+Most clients list discovered tools after connecting. You should see 92 tools
 (`list_servers`, `get_server`, `create_server`, ..., `get_pricing`). Ask the
 agent to *"list my Hetzner servers"* to confirm `list_servers` runs.
 

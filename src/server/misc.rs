@@ -6,8 +6,8 @@
 //! pattern in infra.rs: `IdArgs` for numeric get_*, `NameLabelSortTypePageArgs`
 //! for list_* tools whose spec entry lists name/label_selector/sort/type
 //! (certificates, placement_groups - the `type` enum differs per resource,
-//! but the field doc stays generic, the same tradeoff IdArgs/PageArgs already
-//! make). list_zones and list_isos get their own structs since their filter
+//! but the field doc stays generic, the same tradeoff IdArgs already
+//! makes). list_zones and list_isos get their own structs since their filter
 //! sets (mode; architecture + wildcard) don't match that shape.
 
 use rmcp::handler::server::wrapper::Parameters;
@@ -17,7 +17,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{
-    HcloudServer, IdArgs, ZoneIdArgs, pagination_query, push_param, respond, validate_zone_id,
+    HcloudServer, IdArgs, ZoneIdArgs, pagination_query, push_param, push_params, respond,
+    validate_zone_id,
 };
 
 /// Pagination plus name/label/sort/type filters, shared by list tools whose
@@ -47,12 +48,8 @@ fn name_label_sort_type_query(
     let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
-    for sort in args.sort.into_iter().flatten() {
-        push_param(&mut q, "sort", Some(sort));
-    }
-    for t in args.r#type.into_iter().flatten() {
-        push_param(&mut q, "type", Some(t));
-    }
+    push_params(&mut q, "sort", args.sort);
+    push_params(&mut q, "type", args.r#type);
     Ok(q)
 }
 
@@ -79,9 +76,7 @@ fn zone_list_query(args: ZoneListArgs) -> Result<Vec<(&'static str, String)>, Er
     let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "label_selector", args.label_selector);
-    for sort in args.sort.into_iter().flatten() {
-        push_param(&mut q, "sort", Some(sort));
-    }
+    push_params(&mut q, "sort", args.sort);
     push_param(&mut q, "mode", args.mode);
     Ok(q)
 }
@@ -107,13 +102,11 @@ fn iso_list_query(args: IsoListArgs) -> Result<Vec<(&'static str, String)>, Erro
     let mut q = pagination_query(args.page, args.per_page)?;
     push_param(&mut q, "name", args.name);
     push_param(&mut q, "architecture", args.architecture);
-    if let Some(wildcard) = args.include_architecture_wildcard {
-        push_param(
-            &mut q,
-            "include_architecture_wildcard",
-            Some(wildcard.to_string()),
-        );
-    }
+    push_param(
+        &mut q,
+        "include_architecture_wildcard",
+        args.include_architecture_wildcard.map(|b| b.to_string()),
+    );
     Ok(q)
 }
 

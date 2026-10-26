@@ -103,7 +103,7 @@ async fn initialize_list_and_call_flow_through_the_real_call_tool() {
 
     // tools/list: the real combined router, not a direct method call.
     let tools = client.list_tools(None).await.expect("tools/list");
-    assert_eq!(tools.tools.len(), 93);
+    assert_eq!(tools.tools.len(), 92);
     assert!(tools.tools.iter().any(|t| t.name == "list_servers"));
 
     // tools/call: the real call_tool dispatch - project resolution, token

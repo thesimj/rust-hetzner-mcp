@@ -1,12 +1,11 @@
 //! Compute tools: servers, images, server_types, ssh_keys. Implemented in
 //! milestone M3a (brief B3), fixed per review in B10.
 //!
-//! `IdArgs` and `PageArgs` are shared across several tools instead of a
-//! bespoke struct per tool - the id/pagination shape, docs, and validation
-//! are identical, and a per-tool struct would only rename the field's doc
-//! comment. This is a deliberate schema tradeoff (a slightly more generic
-//! per-field description), not an oversight; a new id- or pagination-only
-//! tool added here does not need its own struct.
+//! `IdArgs` is shared across several tools instead of a bespoke struct per
+//! tool - the id shape, docs, and validation are identical, and a per-tool
+//! struct would only rename the field's doc comment. This is a deliberate
+//! schema tradeoff (a slightly more generic per-field description), not an
+//! oversight; a new id-only tool added here does not need its own struct.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +15,10 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
-use super::{HcloudServer, IdArgs, PageArgs, check_action, pagination_query, push_param, respond};
+use super::{
+    HcloudServer, IdArgs, check_action, json_body, pagination_query, push_param, push_params,
+    respond,
+};
 
 const POWER_ACTIONS: [&str; 4] = ["poweron", "poweroff", "reboot", "shutdown"];
 
@@ -149,6 +151,18 @@ pub(crate) struct ListImagesArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListServerTypesArgs {
+    /// Exact server type name to filter by, e.g. "cx22".
+    pub name: Option<String>,
+    /// Page number, 1-based.
+    #[schemars(range(min = 1))]
+    pub page: Option<u32>,
+    /// Results per page (default 25, max 50).
+    #[schemars(range(min = 1, max = 50))]
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ListSshKeysArgs {
     /// Sort order, e.g. "id:asc" or "name:desc"; repeatable.
     pub sort: Option<Vec<String>>,
@@ -195,12 +209,8 @@ impl HcloudServer {
         let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
-        for status in args.status.into_iter().flatten() {
-            push_param(&mut query, "status", Some(status));
-        }
-        for sort in args.sort.into_iter().flatten() {
-            push_param(&mut query, "sort", Some(sort));
-        }
+        push_params(&mut query, "status", args.status);
+        push_params(&mut query, "sort", args.sort);
         respond(self.client.get("/servers", &query).await)
     }
 
@@ -236,8 +246,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateServerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/servers", body).await)
     }
 
@@ -302,22 +311,14 @@ impl HcloudServer {
         push_param(&mut query, "architecture", args.architecture);
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "label_selector", args.label_selector);
-        if let Some(include_deprecated) = args.include_deprecated {
-            push_param(
-                &mut query,
-                "include_deprecated",
-                Some(include_deprecated.to_string()),
-            );
-        }
-        for status in args.status.into_iter().flatten() {
-            push_param(&mut query, "status", Some(status));
-        }
-        for bound_to in args.bound_to.into_iter().flatten() {
-            push_param(&mut query, "bound_to", Some(bound_to));
-        }
-        for sort in args.sort.into_iter().flatten() {
-            push_param(&mut query, "sort", Some(sort));
-        }
+        push_param(
+            &mut query,
+            "include_deprecated",
+            args.include_deprecated.map(|b| b.to_string()),
+        );
+        push_params(&mut query, "status", args.status);
+        push_params(&mut query, "bound_to", args.bound_to);
+        push_params(&mut query, "sort", args.sort);
         respond(self.client.get("/images", &query).await)
     }
 
@@ -338,7 +339,8 @@ impl HcloudServer {
     }
 
     #[tool(
-        description = "List available server types (plans).",
+        description = "List available server types (plans), optionally filtered by name. \
+        Per-location availability and deprecation are in each entry's `locations` list.",
         annotations(
             title = "List server types",
             read_only_hint = true,
@@ -348,9 +350,10 @@ impl HcloudServer {
     )]
     pub(crate) async fn list_server_types(
         &self,
-        Parameters(args): Parameters<PageArgs>,
+        Parameters(args): Parameters<ListServerTypesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let query = pagination_query(args.page, args.per_page)?;
+        let mut query = pagination_query(args.page, args.per_page)?;
+        push_param(&mut query, "name", args.name);
         respond(self.client.get("/server_types", &query).await)
     }
 
@@ -388,9 +391,7 @@ impl HcloudServer {
         push_param(&mut query, "name", args.name);
         push_param(&mut query, "fingerprint", args.fingerprint);
         push_param(&mut query, "label_selector", args.label_selector);
-        for sort in args.sort.into_iter().flatten() {
-            push_param(&mut query, "sort", Some(sort));
-        }
+        push_params(&mut query, "sort", args.sort);
         respond(self.client.get("/ssh_keys", &query).await)
     }
 
@@ -423,8 +424,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateSshKeyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/ssh_keys", body).await)
     }
 
@@ -864,10 +864,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_server_types_paginates() {
+    async fn list_server_types_paginates_and_filters_by_name() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/server_types"))
+            .and(query_param("name", "cx22"))
             .and(query_param("page", "2"))
             .and(query_param("per_page", "10"))
             .respond_with(
@@ -878,7 +879,8 @@ mod tests {
 
         let server = server_for(mock.uri());
         let res = server
-            .list_server_types(Parameters(PageArgs {
+            .list_server_types(Parameters(ListServerTypesArgs {
+                name: Some("cx22".to_string()),
                 page: Some(2),
                 per_page: Some(10),
             }))
@@ -907,7 +909,8 @@ mod tests {
 
         let server = server_for(mock.uri());
         let err = server
-            .list_server_types(Parameters(PageArgs {
+            .list_server_types(Parameters(ListServerTypesArgs {
+                name: None,
                 page: Some(0),
                 per_page: None,
             }))

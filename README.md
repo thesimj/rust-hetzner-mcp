@@ -9,14 +9,14 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/thesimj/rust-hetzner-mcp/blob/main/Cargo.toml)
 
 An MCP (stdio) server for the [Hetzner Cloud API](https://docs.hetzner.cloud/),
-in a single Rust binary: 93 tools covering every resource group of
+in a single Rust binary: 92 tools covering every resource group of
 `api.hetzner.cloud/v1`, from listing servers to managing DNS RRSets.
 
 ## Features
 
 - **Full API coverage** - every resource group on `api.hetzner.cloud/v1`:
-  servers, images, server types, SSH keys, locations, datacenters, volumes,
-  networks, firewalls, Floating IPs, Primary IPs, Load Balancers, certificates,
+  servers, images, server types, SSH keys, locations, volumes, networks
+  (+ members), firewalls, Floating IPs, Primary IPs, Load Balancers, certificates,
   ISOs, placement groups, DNS zones and RRSets, action polling, and pricing.
 - **Multiple projects** - one config file lists any number of projects with a
   name, token and optional description; every tool takes a `project` argument
@@ -258,7 +258,7 @@ With a single project, calls may still omit `project`. Saved prompts that pass
 
 ## Tools
 
-93 tools total, across 9 routers. Every `list_*`/`get_*` tool is read-only.
+92 tools total, across 9 routers. Every `list_*`/`get_*` tool is read-only.
 `*_action` tools take an allowlisted `action` name plus an optional `params`
 object; the allowed actions are noted after each.
 
@@ -280,7 +280,7 @@ object; the allowed actions are noted after each.
 - `image_action` - run an image action. Actions: change_protection (toggles delete protection)
 
 **Server types**
-- `list_server_types` - list available server types (plans)
+- `list_server_types` - list available server types (plans), filterable by name
 - `get_server_type` - get a server type by ID
 
 **SSH keys**
@@ -290,11 +290,9 @@ object; the allowed actions are noted after each.
 - `delete_ssh_key` - delete an SSH key from the project. **Destructive**
 - `update_ssh_key` - update an SSH key's name or labels
 
-**Locations & datacenters**
-- `list_locations` - list locations Hetzner resources can run in
+**Locations**
+- `list_locations` - list locations Hetzner resources can run in, filterable by name or sort
 - `get_location` - get a location by ID
-- `list_datacenters` - list datacenters Hetzner resources can run in
-- `get_datacenter` - get a datacenter by ID
 
 **Volumes**
 - `list_volumes` - list block storage volumes, filterable by name, label selector, sort, or status
@@ -307,6 +305,7 @@ object; the allowed actions are noted after each.
 **Networks**
 - `list_networks` - list private networks, filterable by name, label selector, or sort
 - `get_network` - get a network by ID
+- `list_network_members` - list the servers and Load Balancers attached to a network, filterable by type, subnet, status, or sort
 - `create_network` - create a private network (free; billed resources attach to it)
 - `update_network` - update a network's name, labels, or vSwitch route exposure
 - `delete_network` - delete a network permanently. **Destructive**
@@ -339,7 +338,7 @@ object; the allowed actions are noted after each.
 **Load Balancers**
 - `list_load_balancers` - list Load Balancers, filterable by name, label selector, or sort order
 - `get_load_balancer` - get a Load Balancer by ID
-- `create_load_balancer` - create a Load Balancer. **Billable**
+- `create_load_balancer` - create a Load Balancer, optionally with existing Primary IPs via `public_net`. **Billable**
 - `update_load_balancer` - update a Load Balancer's name and/or labels
 - `delete_load_balancer` - delete a Load Balancer permanently. **Destructive**
 - `load_balancer_action` - run a Load Balancer action. **Destructive.** Actions: add_service, add_target, attach_to_network, change_algorithm, change_dns_ptr, change_protection, change_type, delete_service, detach_from_network, disable_public_interface, enable_public_interface, remove_target, update_service (13 total)
@@ -394,7 +393,7 @@ object; the allowed actions are noted after each.
 Every resource group and every mutating action endpoint of
 `api.hetzner.cloud/v1`: servers (full CRUD, metrics, the
 23-action `server_action`, and `power_server`), images, server types, SSH
-keys, locations, datacenters, volumes, networks, firewalls, Floating IPs,
+keys, locations, volumes, networks (+ members), firewalls, Floating IPs,
 Primary IPs, Load Balancers (+ types, metrics, the 13-action
 `load_balancer_action`), certificates, ISOs, placement groups, DNS zones
 (+ RRSets), global actions polling, and pricing.

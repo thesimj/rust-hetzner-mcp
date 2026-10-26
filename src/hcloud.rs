@@ -22,6 +22,16 @@ pub struct HcloudClient {
     base_url: String,
 }
 
+/// Base URL only - never derive this, a derived `Debug` would print the token.
+impl std::fmt::Debug for HcloudClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HcloudClient")
+            .field("base_url", &self.base_url)
+            .field("token", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 impl HcloudClient {
     /// Clone this client with a different project's token, sharing the same
     /// underlying `reqwest::Client` (and its connection pool) - swapping
@@ -374,6 +384,14 @@ mod tests {
         let body = "x".repeat(600);
         let s = api_error_summary(&body);
         assert!(s.chars().count() == MAX_ERROR_BODY_CHARS + 1 && s.ends_with('…'));
+    }
+
+    #[test]
+    fn debug_shows_the_base_url_but_never_the_token() {
+        let client = HcloudClient::new("https://internal.example/v1", "secret-token").unwrap();
+        let shown = format!("{client:?}");
+        assert!(shown.contains("https://internal.example/v1"), "{shown}");
+        assert!(!shown.contains("secret-token"), "{shown}");
     }
 
     #[tokio::test]

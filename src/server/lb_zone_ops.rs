@@ -14,8 +14,8 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, check_action, pagination_query,
-    push_param, require_update_fields, respond, validate_zone_id,
+    HcloudServer, IdArgs, MAX_ZONE_ID_LEN, ZoneIdArgs, action_body, check_action, json_body,
+    pagination_query, push_param, push_params, require_update_fields, respond, validate_zone_id,
 };
 
 const LB_ACTIONS: [&str; 13] = [
@@ -128,6 +128,22 @@ pub(crate) struct CreateLoadBalancerArgs {
     /// Enable or disable the public interface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_interface: Option<bool>,
+    /// Existing Primary IPs to assign; only allowed with the public interface
+    /// enabled. Each omitted version gets a new system-managed IP instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_net: Option<CreateLoadBalancerPublicNet>,
+}
+
+/// `public_net` of POST /load_balancers (changelog 2026-10-05). A Primary IP
+/// can only be assigned at creation and stays for the Load Balancer's lifetime.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct CreateLoadBalancerPublicNet {
+    /// ID of an unassigned ipv4 Primary IP in the Load Balancer's location.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4: Option<u64>,
+    /// ID of an unassigned ipv6 Primary IP in the Load Balancer's location.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv6: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -309,7 +325,9 @@ pub(crate) struct ZoneRrsetActionArgs {
 #[tool_router(router = lb_zone_ops_router, vis = "pub(crate)")]
 impl HcloudServer {
     #[tool(
-        description = "Create a new Load Balancer. This creates a BILLABLE resource.",
+        description = "Create a new Load Balancer. This creates a BILLABLE resource. \
+        public_net can assign existing Primary IPs (from list_primary_ips) at creation \
+        only; they cannot be changed afterwards.",
         annotations(
             title = "Create Load Balancer",
             read_only_hint = false,
@@ -321,8 +339,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateLoadBalancerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/load_balancers", body).await)
     }
 
@@ -342,14 +359,14 @@ impl HcloudServer {
         Parameters(args): Parameters<UpdateLoadBalancerArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let path = format!("/load_balancers/{}", args.id);
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&path, body).await)
     }
 
     #[tool(
-        description = "Delete a Load Balancer permanently.",
+        description = "Delete a Load Balancer permanently. Returns a delete_load_balancer \
+        action; pass its id to get_action to track the deletion.",
         annotations(
             title = "Delete Load Balancer",
             read_only_hint = false,
@@ -369,7 +386,7 @@ impl HcloudServer {
         add_target, attach_to_network, change_algorithm, change_dns_ptr, change_protection, \
         change_type, delete_service, detach_from_network, disable_public_interface, \
         enable_public_interface, remove_target, update_service. Several of these interrupt \
-        traffic or change routing.",
+        traffic or change routing. change_dns_ptr requires `ip` and `dns_ptr` in params (dns_ptr null resets it).",
         annotations(
             title = "Load Balancer action",
             read_only_hint = false,
@@ -450,8 +467,7 @@ impl HcloudServer {
         &self,
         Parameters(args): Parameters<CreateZoneArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post("/zones", body).await)
     }
 
@@ -472,8 +488,7 @@ impl HcloudServer {
     ) -> Result<CallToolResult, ErrorData> {
         validate_zone_id(&args.id_or_name)?;
         let path = format!("/zones/{}", args.id_or_name);
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&path, body).await)
     }
@@ -560,12 +575,8 @@ impl HcloudServer {
         let mut query = pagination_query(args.page, args.per_page)?;
         push_param(&mut query, "name", args.rr_name);
         push_param(&mut query, "label_selector", args.label_selector);
-        for t in args.rr_type.into_iter().flatten() {
-            push_param(&mut query, "type", Some(t));
-        }
-        for s in args.sort.into_iter().flatten() {
-            push_param(&mut query, "sort", Some(s));
-        }
+        push_params(&mut query, "type", args.rr_type);
+        push_params(&mut query, "sort", args.sort);
         respond(
             self.client
                 .get(&format!("/zones/{}/rrsets", args.id_or_name), &query)
@@ -620,8 +631,7 @@ impl HcloudServer {
             return Err(ErrorData::invalid_params("records must not be empty", None));
         }
         let path = format!("/zones/{}/rrsets", args.id_or_name);
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         respond(self.client.post(&path, body).await)
     }
 
@@ -647,8 +657,7 @@ impl HcloudServer {
             "/zones/{}/rrsets/{}/{}",
             args.id_or_name, args.rr_name, args.rr_type
         );
-        let body = serde_json::to_value(&args)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = json_body(&args)?;
         require_update_fields(&body)?;
         respond(self.client.put(&path, body).await)
     }
@@ -684,7 +693,8 @@ impl HcloudServer {
         change_ttl, remove_records, set_records, update_records. set_records \
         OVERWRITES the record values; update_records updates record comments \
         only; add_records auto-creates the RRSet if absent; remove_records \
-        auto-deletes it once it holds no records.",
+        auto-deletes it once it holds no records. change_ttl requires `ttl` in params \
+        (null uses the zone's default TTL).",
         annotations(
             title = "Zone RRSet action",
             read_only_hint = false,
@@ -777,6 +787,7 @@ mod tests {
                 targets: None,
                 labels: None,
                 public_interface: None,
+                public_net: None,
             }))
             .await
             .unwrap();
@@ -803,7 +814,8 @@ mod tests {
                 "services": [{"protocol": "tcp", "listen_port": 80}],
                 "targets": [{"type": "server", "server": {"id": 1}}],
                 "labels": {"env": "prod"},
-                "public_interface": true
+                "public_interface": true,
+                "public_net": {"ipv4": 7}
             })))
             .respond_with(
                 ResponseTemplate::new(201)
@@ -825,6 +837,10 @@ mod tests {
                 targets: Some(serde_json::json!([{"type": "server", "server": {"id": 1}}])),
                 labels: Some(labels),
                 public_interface: Some(true),
+                public_net: Some(CreateLoadBalancerPublicNet {
+                    ipv4: Some(7),
+                    ipv6: None,
+                }),
             }))
             .await
             .unwrap();

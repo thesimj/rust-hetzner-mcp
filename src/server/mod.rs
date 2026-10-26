@@ -90,21 +90,19 @@ impl Projects {
         self.entries.len()
     }
 
-    /// Resolve a call's `project` argument to a (name, token) pair, or a
+    /// Resolve a call's `project` argument to a configured project, or a
     /// `-32602 invalid_params` per §4/§5. `read_only` gates the pin per the
     /// §4 hardening (D2): mutating tools always require an explicit selector.
     pub(crate) fn resolve(
         &self,
         selector: Option<String>,
         read_only: bool,
-    ) -> Result<(String, String), ErrorData> {
+    ) -> Result<ResolvedProject, ErrorData> {
         if self.entries.len() == 1 {
             let (only_name, only) = self.entries.iter().next().expect("checked len == 1");
             return match selector {
-                None => Ok((only_name.clone(), only.token.clone())),
-                Some(s) if s.is_empty() || &s == only_name => {
-                    Ok((only_name.clone(), only.token.clone()))
-                }
+                None => Ok(only.into()),
+                Some(s) if s.is_empty() || &s == only_name => Ok(only.into()),
                 Some(s) => Err(ErrorData::invalid_params(
                     format!("unknown project \"{s}\"; this server has one project: {only_name}"),
                     None,
@@ -115,7 +113,7 @@ impl Projects {
             Some(s) => self
                 .entries
                 .get(&s)
-                .map(|p| (s.clone(), p.token.clone()))
+                .map(ResolvedProject::from)
                 .ok_or_else(|| {
                     ErrorData::invalid_params(
                         format!(
@@ -129,11 +127,8 @@ impl Projects {
                 .pin
                 .as_ref()
                 .filter(|_| read_only)
-                .and_then(|pin| {
-                    self.entries
-                        .get(pin)
-                        .map(|p| (pin.clone(), p.token.clone()))
-                })
+                .and_then(|pin| self.entries.get(pin))
+                .map(ResolvedProject::from)
                 .ok_or_else(|| {
                     ErrorData::invalid_params(
                         format!(
@@ -145,6 +140,32 @@ impl Projects {
                     )
                 }),
         }
+    }
+}
+
+/// The project one tool call runs against. `Debug` redacts the token by
+/// hand - never derive it.
+#[derive(PartialEq, Eq)]
+pub(crate) struct ResolvedProject {
+    pub(crate) name: String,
+    pub(crate) token: String,
+}
+
+impl From<&Project> for ResolvedProject {
+    fn from(project: &Project) -> Self {
+        Self {
+            name: project.name.clone(),
+            token: project.token.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for ResolvedProject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedProject")
+            .field("name", &self.name)
+            .field("token", &"<redacted>")
+            .finish()
     }
 }
 
@@ -161,9 +182,9 @@ fn read_only(tool: &rmcp::model::Tool) -> bool {
 
 /// Inject the `project` schema property (§6.3) into every tool except
 /// `list_projects`. Schema only - no Rust struct declares `project` (T15);
-/// a strict-validation rmcp upgrade would break all 92 tools at once.
+/// a strict-validation rmcp upgrade would break all 91 tools at once.
 fn inject_project_property(router: &mut ToolRouter<HcloudServer>, projects: &Projects) {
-    // Built once and cloned per tool: identical for all 92 of them.
+    // Built once and cloned per tool: identical for all 91 of them.
     let property = serde_json::json!({
         "type": "string",
         "enum": projects.names(),
@@ -204,6 +225,18 @@ pub struct HcloudServer {
     pub(crate) client: HcloudClient,
     pub(crate) projects: Arc<Projects>,
     pub(crate) tool_router: Arc<ToolRouter<Self>>,
+}
+
+/// Delegates to the redacting `Debug` impls of its parts; the router is
+/// summarized by its tool count.
+impl std::fmt::Debug for HcloudServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HcloudServer")
+            .field("client", &self.client)
+            .field("projects", &self.projects)
+            .field("tools", &self.tool_router.map.len())
+            .finish()
+    }
 }
 
 impl HcloudServer {
@@ -331,7 +364,10 @@ impl HcloudServer {
 /// count plus up to two server names, so a mislabeled token is human-visible
 /// (§9.1) even though no API call can name a token's project (C2).
 fn project_fingerprint(v: &Value) -> String {
-    let servers = v["servers"].as_array().cloned().unwrap_or_default();
+    let servers = v["servers"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let total = v["meta"]["pagination"]["total_entries"]
         .as_u64()
         .unwrap_or(servers.len() as u64);
@@ -345,13 +381,13 @@ fn project_fingerprint(v: &Value) -> String {
 
 impl HcloudServer {
     /// `call_tool`'s pre-dispatch decision: `None` dispatches untouched
-    /// (`list_projects` spans every project itself); `Some((name, token))`
+    /// (`list_projects` spans every project itself); `Some(project)`
     /// is the resolved project. Existence is checked before resolving.
     fn plan_call(
         &self,
         name: &str,
         arguments: &mut Option<serde_json::Map<String, Value>>,
-    ) -> Result<Option<(String, String)>, ErrorData> {
+    ) -> Result<Option<ResolvedProject>, ErrorData> {
         if name == LIST_PROJECTS {
             return Ok(None);
         }
@@ -380,7 +416,8 @@ impl ServerHandler for HcloudServer {
         mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let Some((name, token)) = self.plan_call(request.name.as_ref(), &mut request.arguments)?
+        let Some(ResolvedProject { name, token }) =
+            self.plan_call(request.name.as_ref(), &mut request.arguments)?
         else {
             return self
                 .tool_router
@@ -498,9 +535,27 @@ pub(crate) fn push_param(
     }
 }
 
+/// Push a repeatable query param once per value (`?status=a&status=b`),
+/// with [`push_param`]'s skip-empty rule applied to each value.
+pub(crate) fn push_params(
+    query: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    values: Option<Vec<String>>,
+) {
+    for value in values.into_iter().flatten() {
+        push_param(query, key, Some(value));
+    }
+}
+
+/// Serialize a tool's args into the JSON request body. Failure here is a bug
+/// in an arg struct, not bad input, so it surfaces as an internal error.
+pub(crate) fn json_body(args: &impl serde::Serialize) -> Result<Value, ErrorData> {
+    serde_json::to_value(args).map_err(|e| ErrorData::internal_error(e.to_string(), None))
+}
+
 /// Reject an update body with no fields set: `skip_serializing_if` makes an
 /// all-unset call serialize to `{}`, which would send a mutating no-op PUT.
-/// Every update_* tool calls this between `to_value` and `client.put`.
+/// Every update_* tool calls this between `json_body` and `client.put`.
 pub(crate) fn require_update_fields(body: &Value) -> Result<(), ErrorData> {
     if body.as_object().is_none_or(serde_json::Map::is_empty) {
         Err(ErrorData::invalid_params(
@@ -518,18 +573,6 @@ pub(crate) struct IdArgs {
     /// Numeric ID of the resource, from the matching list_* tool's response
     /// (or, for actions, a mutation response's `action.id`).
     pub id: u64,
-}
-
-/// `page`/`per_page` pagination, shared by every list_* tool with no other
-/// filters (W3.4 - previously duplicated verbatim in compute.rs and infra.rs).
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub(crate) struct PageArgs {
-    /// Page number to fetch, 1-based.
-    #[schemars(range(min = 1))]
-    pub page: Option<u32>,
-    /// Results per page, up to 50 (API default 25).
-    #[schemars(range(min = 1, max = 50))]
-    pub per_page: Option<u32>,
 }
 
 /// Action name plus optional action-specific parameters, shared by every
@@ -638,6 +681,44 @@ mod tests {
     }
 
     #[test]
+    fn debug_output_names_projects_but_never_prints_a_token() {
+        let server = test_support::dead_projects(&["prod", "staging"], None);
+        let resolved = server
+            .plan_call(
+                "list_servers",
+                &mut Some(serde_json::Map::from_iter([(
+                    "project".to_string(),
+                    serde_json::json!("prod"),
+                )])),
+            )
+            .unwrap()
+            .unwrap();
+        for shown in [format!("{server:?}"), format!("{resolved:?}")] {
+            assert!(shown.contains("prod"), "{shown}");
+            assert!(
+                !shown.contains(&test_support::project_token("prod")),
+                "{shown}"
+            );
+            assert!(
+                !shown.contains(&test_support::project_token("staging")),
+                "{shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_fingerprint_reports_the_total_and_up_to_two_names() {
+        let page = serde_json::json!({
+            "servers": [{"name": "web-1"}, {"name": "web-2"}],
+            "meta": {"pagination": {"total_entries": 7}},
+        });
+        assert_eq!(project_fingerprint(&page), "7 server(s): web-1, web-2");
+        let no_meta = serde_json::json!({"servers": [{"name": "db"}]});
+        assert_eq!(project_fingerprint(&no_meta), "1 server(s): db");
+        assert_eq!(project_fingerprint(&serde_json::json!({})), "0 server(s)");
+    }
+
+    #[test]
     fn ok_json_wraps_the_payload_in_a_text_block() {
         let res = ok_json(serde_json::json!({"servers": []})).unwrap();
         assert_eq!(
@@ -661,9 +742,9 @@ mod tests {
             + HcloudServer::lb_zone_ops_router().list_all().len()
             + HcloudServer::projects_router().list_all().len();
         assert_eq!(server.tool_router.list_all().len(), parts);
-        // Absolute pin: 13 compute + 10 infra + 8 net + 8 misc + 6 servers_ops
+        // Absolute pin: 13 compute + 9 infra + 8 net + 8 misc + 6 servers_ops
         // + 15 res_ops + 16 netres_ops + 16 lb_zone_ops + 1 list_projects.
-        assert_eq!(server.tool_router.list_all().len(), 93);
+        assert_eq!(server.tool_router.list_all().len(), 92);
     }
 
     #[test]
@@ -713,7 +794,7 @@ mod tests {
             assert!(!title.is_empty(), "{}: empty title", tool.name);
             assert!(titles.insert(title), "{}: duplicate title", tool.name);
         }
-        assert_eq!(titles.len(), 93);
+        assert_eq!(titles.len(), 92);
     }
 
     /// W3.5: `idempotent_hint = true` is meaningful only when
@@ -1046,12 +1127,12 @@ mod multi_project_tests {
     }
 
     // T1: single-project schemas carry no `project` property, and the
-    // original 92 tools' serialized bytes match the pre-feature baseline.
+    // other 91 tools' serialized bytes match the pre-feature baseline.
     #[test]
     fn t1_single_project_schemas_are_unchanged() {
         let server = dead_server();
         let tools = tools_except_list_projects(server.tool_router.list_all());
-        assert_eq!(tools.len(), 92);
+        assert_eq!(tools.len(), 91);
         for tool in &tools {
             assert!(
                 !tool.input_schema.contains_key("project"),
@@ -1068,14 +1149,14 @@ mod multi_project_tests {
         }
     }
 
-    // T2: multi-project schemas carry `project` on all 92 tools (not on
+    // T2: multi-project schemas carry `project` on all 91 tools (not on
     // list_projects), required with no pin; with a pin, required tracks
     // "mutating" exactly, matching what `resolve` actually enforces.
     #[test]
     fn t2_multi_project_schemas_gain_the_project_property() {
         let server = dead_projects(&["prod", "staging"], None);
         let tools = tools_except_list_projects(server.tool_router.list_all());
-        assert_eq!(tools.len(), 92);
+        assert_eq!(tools.len(), 91);
         for tool in &tools {
             assert!(schema_has_project(tool), "{}: missing project", tool.name);
             assert!(
@@ -1093,7 +1174,7 @@ mod multi_project_tests {
 
         let pinned = dead_projects(&["prod", "staging"], Some("prod"));
         let pinned_tools = tools_except_list_projects(pinned.tool_router.list_all());
-        assert_eq!(pinned_tools.len(), 92);
+        assert_eq!(pinned_tools.len(), 91);
         for tool in &pinned_tools {
             assert!(schema_has_project(tool), "{}: missing project", tool.name);
             assert_eq!(
@@ -1111,7 +1192,7 @@ mod multi_project_tests {
     fn t2b_project_property_lists_names_and_descriptions() {
         let server = dead_described(&[("nb-dns", Some("DNS zones")), ("nb-main", None)], None);
         let tools = tools_except_list_projects(server.tool_router.list_all());
-        assert_eq!(tools.len(), 92);
+        assert_eq!(tools.len(), 91);
         for tool in &tools {
             let project = &tool.input_schema["properties"]["project"];
             let description = project["description"].as_str().unwrap();
@@ -1144,7 +1225,8 @@ mod multi_project_tests {
 
         let base = server_for_projects(mock.uri(), &["prod", "staging"], None);
         let mut args = project_arg("staging");
-        let (name, token) = base.plan_call("list_servers", &mut args).unwrap().unwrap();
+        let ResolvedProject { name, token } =
+            base.plan_call("list_servers", &mut args).unwrap().unwrap();
         assert_eq!(name, "staging");
         let result = base
             .scoped(token)
@@ -1200,7 +1282,7 @@ mod multi_project_tests {
     fn t6b_accepted_selectors_in_single_project_mode_all_succeed() {
         let server = dead_server();
         for mut args in [None, project_arg("default"), project_arg("")] {
-            let (name, _token) = server
+            let ResolvedProject { name, .. } = server
                 .plan_call("list_servers", &mut args)
                 .unwrap()
                 .unwrap();
@@ -1227,7 +1309,8 @@ mod multi_project_tests {
 
         let base = server_for_projects(mock.uri(), &["prod", "staging"], Some("prod"));
         let mut args = None;
-        let (name, token) = base.plan_call("list_servers", &mut args).unwrap().unwrap();
+        let ResolvedProject { name, token } =
+            base.plan_call("list_servers", &mut args).unwrap().unwrap();
         assert_eq!(name, "prod");
         let result = base
             .scoped(token)
@@ -1309,7 +1392,8 @@ mod multi_project_tests {
 
         let base = server_for_projects(mock.uri(), &["prod", "staging"], None);
         let mut args = project_arg("staging");
-        let (_, token) = base.plan_call("get_pricing", &mut args).unwrap().unwrap();
+        let ResolvedProject { token, .. } =
+            base.plan_call("get_pricing", &mut args).unwrap().unwrap();
         let result = base.scoped(token).get_pricing().await.unwrap();
         assert_ne!(result.is_error, Some(true));
     }
@@ -1473,7 +1557,7 @@ mod multi_project_tests {
                 .unwrap()
                 .clone(),
         );
-        let (name, _token) = server
+        let ResolvedProject { name, .. } = server
             .plan_call("list_servers", &mut args)
             .unwrap()
             .unwrap();
