@@ -10,7 +10,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::ToolCallContext},
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-        ProtocolVersion, ServerCapabilities, ServerInfo,
+        ProtocolVersion, ServerCapabilities, ServerConfig,
     },
     service::RequestContext,
     tool, tool_handler, tool_router,
@@ -432,7 +432,7 @@ impl ServerHandler for HcloudServer {
         Ok(maybe_annotate(result, &name, self.projects.len() > 1))
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut instructions = String::from(
             "MCP server for the Hetzner Cloud API. Every list_*/get_* tool \
             is read-only and safe to call freely. Tools named create_*, \
@@ -454,7 +454,7 @@ impl ServerHandler for HcloudServer {
                 self.projects.names_with_descriptions()
             ));
         }
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(instructions);
         // The objective pins the latest MCP revision; rmcp does not default to
         // it, so name it explicitly (pinned by a test below).
